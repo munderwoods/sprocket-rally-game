@@ -62,6 +62,9 @@ package)
     run "cd sprocket\\tools & \"$RC\" /nologo /fo sprocket.res sprocket.rc" | tail -2
     run "if exist build\\windows-ship\\bin\\sprocket.exe del build\\windows-ship\\bin\\sprocket.exe" >/dev/null
     run "set LINK=$REMOTE\\sprocket\\tools\\sprocket.res /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup& $KM sprocket ship" | grep -i 'error\|warning\|LINK' | head -20
+    # (the engine's asset cooker owns dist/sprocket/assets and will not take a folder an
+    # older kormake filled: one without its .goldberg mark is cleared first)
+    run "if exist dist\\sprocket\\assets if not exist dist\\sprocket\\assets\\.goldberg rmdir /s /q dist\\sprocket" >/dev/null
     run "$KM package sprocket ship" | tail -1
     run "if exist $D rmdir /s /q $D" >/dev/null
     run "xcopy /e /i /q /y dist\\sprocket $D" | tail -1
