@@ -106,6 +106,8 @@ struct Game {
     u32        tick = 0;
     Handle     tex, mat, screen, backing;
     f32        last_params[8] = {};
+    f32        show_w = 0, show_h = 0;  // the picture's size in the window, for the shader
+    bool       frame_dirty = false;     // a tick has drawn since the picture was last sent to the GPU
     bool       hit[(u32)Key::Count] = {}; // keys pressed this tick (from KeyDown events, so no tap is missed)
     u32        hit_pad = 0;
     u8         stick_held = 0;   // which ways the left stick was pushed last tick (menu navigation)
@@ -1092,16 +1094,31 @@ void sprocket_tick(TickContext& ctx) {
         draw_text_c(f, f.w / 2, f.h - 43, g.osd_text, rgb(160, 255, 200), 1);
     }
 
-    // ---- present: upload the frame, letterbox it, set the shader's parameters ----
-    if (!r) return;
-    renderer_texture_upload(r, g.tex, (u32)f.w, (u32)f.h, f.px, (usize)f.w * (usize)f.h * 4);
+    // ---- the picture is drawn; the screen sprite is letterboxed to the chosen aspect here
+    // (it is the simulation's entity), and the Frame cycle shows the picture (sprocket_present)
     f32 ww = (f32)window->width(), wh = (f32)window->height();
     f32 aspect = g.wide ? 16.0f / 9.0f : 4.0f / 3.0f;
     f32 dw = ww, dh = ww / aspect;
     if (dh > wh) { dh = wh; dw = wh * aspect; }
     dw = kv::floor(dw); dh = kv::floor(dh);
     if (Sprite* s = sprites.get<Sprite>(g.screen)) s->size = vec2{dw, dh};
-    f32 params[8] = {0, 0, dw, dh, (f32)g.crt, g.srgb ? 1.0f : 0.0f, 0, 0};
+    g.show_w = dw; g.show_h = dh;
+    g.frame_dirty = true;
+}
+
+// Presentation, once per frame shown (the Frame cycle): the framebuffer the last tick drew
+// goes up to its texture if a tick has drawn since the last frame, and the CRT shader gets
+// its parameters when they change. Nothing of the simulation is touched here.
+void sprocket_present(TickContext& ctx) {
+    Game& g = ctx.state_as<Game>();
+    Renderer* r = renderer_get(*ctx.engine);
+    if (!r || !g.started) return;
+    if (g.frame_dirty) {
+        g.frame_dirty = false;
+        const Frame& f = g.frame;
+        renderer_texture_upload(r, g.tex, (u32)f.w, (u32)f.h, f.px, (usize)f.w * (usize)f.h * 4);
+    }
+    f32 params[8] = {0, 0, g.show_w, g.show_h, (f32)g.crt, g.srgb ? 1.0f : 0.0f, 0, 0};
     bool changed = false;
     for (int i = 0; i < 8; ++i) if (params[i] != g.last_params[i]) changed = true;
     if (changed) {
@@ -1168,6 +1185,11 @@ constinit const SystemDesc k_systems[] = {
         .fn = sprocket_tick,
         .reads = "input.state, platform_hid.window, ExitRequested, KeyDown, PadButtonDown",
         .writes = "sprite.entity"
+    },
+    {   .name = ".present",
+        .phase = Phase::Frame,
+        .fn = sprocket_present,
+        .main_thread = true,
     },
 };
 
