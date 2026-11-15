@@ -62,7 +62,9 @@ static const float geom_PI = 3.141592653589;
 //     vec2 aspect = vec2(registers.invert_aspect > 0.5 ? (0.75, 1.0) : (1.0, 0.75));
 // where the parentheses are GLSL comma expressions: (0.75, 1.0) is 1.0 and (1.0, 0.75) is
 // 0.75, so aspect is vec2(1.0) or vec2(0.75). Reproduced as written, not as intended.
-static const vec2 geom_aspect = (geom_invert_aspect > 0.5) ? vec2(1.0, 1.0) : vec2(0.75, 0.75);
+// The select is scalar on purpose: slangc's SPIR-V emitter throws "Unhandled global inst"
+// on a vector-typed ?: in a global static const.
+static const vec2 geom_aspect = vec2((geom_invert_aspect > 0.5) ? 1.0 : 0.75);
 
 // #define FIX(c) max(abs(c), 1e-5)
 float geom_FIX(float c) { return max(abs(c), 1e-5); }
