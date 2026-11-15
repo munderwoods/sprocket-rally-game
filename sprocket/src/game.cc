@@ -10,6 +10,7 @@
 #include "korvid/core/engine.h"
 #include "korvid/core/log.h"
 #include "korvid/frameloop/frameloop.h"
+#include "korvid/platform/io.h"
 #include "korvid/platform_hid/events.h"
 #include "korvid/platform_hid/host_window.h"
 #include "korvid/platform_hid/input.h"
@@ -18,6 +19,8 @@
 #include "korvid/sprite/sprite.h"
 #include "korvid/sprite/transform2.h"
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 namespace kv {
@@ -131,6 +134,9 @@ struct Game {
     int        ctl_row = 0, ctl_col = 0;
     bool       ctl_capture = false, ctl_in_race = false;
     void*      native = nullptr;  // the window's own handle, for the display options
+    // the two asset files, and what they looked like when last loaded: a change is reloaded
+    char       art_path[512] = {}, bank_path[512] = {};
+    i64        art_stamp = 0, bank_stamp = 0;
 };
 
 // menu.cc's default bindings are written as numbers: hold them to the engine's enum
@@ -496,6 +502,43 @@ const char* song_name(int song) {
 }
 
 // ---- the tick -------------------------------------------------------------------------------
+// ---- assets -----------------------------------------------------------------------------------
+// A file's size and time folded into one number: different whenever the file is rewritten.
+i64 file_stamp(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (i64)st.st_mtime * 1000003 + (i64)st.st_size + 1;
+}
+
+// The sprites and the samples, from the program's cooked asset tree. False if either is missing.
+bool load_assets(Game& g) {
+    char dir[400], err[700];
+    if (!platform_assets_dir(dir, sizeof dir)) { KV_ERROR("sprocket", "no asset tree: neither <exe>.assets nor assets/ beside the executable"); return false; }
+    snprintf(g.art_path, sizeof g.art_path, "%s/sprocket/art.bin", dir);
+    snprintf(g.bank_path, sizeof g.bank_path, "%s/sprocket/samples.bin", dir);
+    if (!art_load(g.art_path, err, sizeof err)) { KV_ERROR("sprocket", "%s", err); return false; }
+    if (!snd_load_bank(g.bank_path, err, sizeof err)) { KV_ERROR("sprocket", "%s", err); return false; }
+    g.art_stamp = file_stamp(g.art_path);
+    g.bank_stamp = file_stamp(g.bank_path);
+    return true;
+}
+
+// Twice a second: has either file been cooked again? Then it is loaded in place, between
+// two ticks, and what is on screen or playing changes with it. A file caught half written
+// is refused by its loader and tried again at the next look.
+void reload_assets(Game& g) {
+    char err[700];
+    i64 a = file_stamp(g.art_path), b = file_stamp(g.bank_path);
+    if (a && a != g.art_stamp) {
+        if (art_load(g.art_path, err, sizeof err)) { g.art_stamp = a; set_osd(g, "ART ", "RELOADED"); KV_INFO("sprocket", "art reloaded"); }
+        else KV_WARN("sprocket", "art not reloaded: %s", err);
+    }
+    if (b && b != g.bank_stamp) {
+        if (snd_load_bank(g.bank_path, err, sizeof err)) { g.bank_stamp = b; set_osd(g, "SAMPLES ", "RELOADED"); KV_INFO("sprocket", "samples reloaded"); }
+        else KV_WARN("sprocket", "samples not reloaded: %s", err);
+    }
+}
+
 // ---- options ----------------------------------------------------------------------------------
 void store_settings(Game& g) {
     g.set.wide = g.wide; g.set.crt = g.crt; g.set.split_rows = g.split_rows;
@@ -581,6 +624,7 @@ void sprocket_tick(TickContext& ctx) {
     Renderer* r = renderer_get(*ctx.engine);
     Keys k{input, &g};
     ++g.tick;
+    if (g.tick % 30 == 0) reload_assets(g);
     for (u32 i = 0; i < (u32)Key::Count; ++i) g.hit[i] = false;
     g.hit_pad = 0;
     for (u32 i = 0; i < KV_MAX_GAMEPADS; ++i) g.hit_pads[i] = 0;
@@ -1147,6 +1191,7 @@ bool sprocket_startup(Engine& engine, ModuleInstance& self) {
     Renderer* r = renderer_get(engine);
     if (!r) return false;
     g->srgb = renderer_caps(r).srgb_output;
+    if (!load_assets(*g)) return false;
     snd_start(engine);
     TextureDesc td;
     td.format = TextureFormat::RGBA8_UNORM; // the shaders expect gamma-encoded texels, as libretro's do

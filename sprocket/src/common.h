@@ -420,5 +420,11 @@ void snd_sfx(int id);
 void snd_engine(bool on, f32 speed);
 void snd_final_lap(bool on);  // the music picks up for the last lap
 void snd_volume(f32 gain);    // the master volume, 0..1
+// The instrument samples, from assets/samples.bin. Before the first load the synth is silent;
+// a later load swaps the samples under the music as it plays. False (with why in `err`) if
+// the file cannot be used, leaving what was loaded in place.
+bool snd_load_bank(const char* path, char* err, int cap);
+// The sprites, from assets/art.bin, into the names art.h declares; again to reload them.
+bool art_load(const char* path, char* err, int cap);
 
 } // namespace sr

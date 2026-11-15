@@ -21,6 +21,8 @@
 #include "korvid/core/atomic.h"
 #include "korvid/core/log.h"
 #include "korvid/platform_audio/audio.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace sr {
@@ -90,16 +92,55 @@ static f32 g_master = 1.0f; // the master volume, set from the options (read by 
 static Adsr k_adsr[SMP_COUNT];
 static const char* const* const k_inst_names = k_smp_names;
 
-static i16 g_pcm[k_bank_pcm_total];  // decoded BRR, 15-bit range, every sample back to back
-static u32 g_pcm_off[SMP_COUNT];
+// The sample bank: what the directory at the head of assets/samples.bin says about each
+// instrument, and every sample decoded, back to back. The mixer takes the pointer once a
+// callback, so a reload swaps the whole bank between two callbacks; the bank before last is
+// the one freed, since a callback may still be reading the one just replaced.
+struct BankSample { u32 samples; i32 loop_start; u32 loop_end; f32 rate, root, atten_db; };
+struct Bank { BankSample s[SMP_COUNT]; u32 off[SMP_COUNT]; i16* pcm; };
+static Bank* volatile g_bank = nullptr;
+static Bank* g_bank_before = nullptr;
+static const Bank* g_cb_bank = nullptr; // the bank the callback in progress plays from
 
-static void decode_bank() {
-    u32 off = 0;
+static u32 rom_u24(const u8* p) { return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16); }
+
+bool snd_load_bank(const char* path, char* err, int cap) {
+    auto fail = [&](const char* why) { if (err && cap > 0) snprintf(err, (size_t)cap, "%s: %s", path, why); return false; };
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return fail("cannot be opened");
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    u8* rom = size > 5 ? (u8*)malloc((size_t)size) : nullptr;
+    bool whole = rom && fread(rom, 1, (size_t)size, fp) == (size_t)size;
+    fclose(fp);
+    if (!whole || memcmp(rom, "SRSM", 4) != 0 || rom[4] < SMP_COUNT || 5 + 16 * (long)rom[4] > size) { free(rom); return fail("is not a sample file this build reads"); }
+    Bank* nb = (Bank*)malloc(sizeof(Bank));
+    if (!nb) { free(rom); return fail("no memory"); }
+    // the directory: where each sample's blocks start, its loop and its tuning; its length is
+    // as far as the block that carries the END bit
+    u32 total = 0;
     for (int s = 0; s < SMP_COUNT; ++s) {
-        g_pcm_off[s] = off;
-        off += k_bank[s].samples;
-        const BankSample& b = k_bank[s];
-        const u8* p = k_brr + b.brr_offset;
+        const u8* e = rom + 5 + 16 * s;
+        BankSample& b = nb->s[s];
+        u32 start = rom_u24(e), loop = rom_u24(e + 3);
+        b.loop_start = loop == 0xFFFFFFu ? -1 : (i32)loop;
+        b.loop_end = rom_u24(e + 6);
+        b.rate = (f32)((f64)rom_u24(e + 9) / 10.0);
+        b.root = (f32)((f64)rom_u24(e + 12) / 1000.0);
+        b.atten_db = (f32)e[15] / 10.0f;
+        b.samples = 0;
+        bool ended = false;
+        for (u32 q = start; (long)q + 9 <= size && !ended; q += 9) { b.samples += 16; ended = (rom[q] & 1) != 0; }
+        if (!ended || b.loop_end > b.samples || (b.loop_start >= 0 && (u32)b.loop_start >= b.loop_end) || b.rate <= 0) { free(rom); free(nb); return fail("has a damaged sample"); }
+        nb->off[s] = total;
+        total += b.samples;
+    }
+    nb->pcm = (i16*)malloc((size_t)total * sizeof(i16));
+    if (!nb->pcm) { free(rom); free(nb); return fail("no memory"); }
+    for (int s = 0; s < SMP_COUNT; ++s) {
+        const BankSample& b = nb->s[s];
+        const u8* p = rom + rom_u24(rom + 5 + 16 * s);
         i32 p1 = 0, p2 = 0;
         u32 n = 0;
         for (u32 blk = 0; blk < b.samples / 16; ++blk, p += 9) {
@@ -114,11 +155,16 @@ static void decode_bank() {
                 if (v > 32767) v = 32767;
                 if (v < -32768) v = -32768;
                 v = (i16)(v << 1) >> 1;
-                if (n < b.samples) g_pcm[g_pcm_off[s] + n++] = (i16)v;
+                if (n < b.samples) nb->pcm[nb->off[s] + n++] = (i16)v;
                 p2 = p1; p1 = v;
             }
         }
     }
+    free(rom);
+    if (g_bank_before) { free(g_bank_before->pcm); free(g_bank_before); }
+    g_bank_before = g_bank;
+    g_bank = nb;
+    return true;
 }
 
 // ---- songs --------------------------------------------------------------------------------
@@ -939,13 +985,14 @@ static f32 voice_sample(Voice& v) {
         }
         s = ((f32)(g_noise & 0x7fff) / 16384.0f - 1.0f) * 0.5f;
     } else {
-        const BankSample& b = k_bank[v.smp];
+        if (!g_cb_bank) return 0;
+        const BankSample& b = g_cb_bank->s[v.smp];
         f32 step = b.rate / (f32)RATE * kv::exp2((note - b.root) / 12.0f);
         if (step > 3.99f) step = 3.99f; // the pitch register's ceiling
         i32 i = (i32)v.pos;
         f32 frac = (f32)(v.pos - (f64)i);
         const f32* w = g_gauss[(int)(frac * 255.0f)];
-        const i16* pcm = g_pcm + g_pcm_off[v.smp];
+        const i16* pcm = g_cb_bank->pcm + g_cb_bank->off[v.smp];
         auto at = [&](i32 k) -> f32 {
             if (k < 0) return 0;
             if ((u32)k >= b.loop_end) {
@@ -1046,7 +1093,7 @@ static void advance_channel(int c) {
         case ST_REL: st.rel = (f32)s.value / 100.0f; continue;
         case ST_GLIDE: st.glide = (f32)s.value / 100.0f; continue;
         case ST_NOTE:
-            if (s.drum) voice_key_on(v, s.value, k_bank[s.value].root, st.vol, st.pan, st.echo);
+            if (s.drum) voice_key_on(v, s.value, g_cb_bank ? g_cb_bank->s[s.value].root : 60.0f, st.vol, st.pan, st.echo);
             else {
                 voice_key_on(v, st.inst, (f32)s.value, st.vol, st.pan, st.echo);
                 v.vib = st.vib; v.vib_hz = VIB_HZ; v.vib_delay = (u32)(VIB_DELAY * RATE);
@@ -1153,6 +1200,7 @@ static f32 dac(f32 x) {
 }
 
 static void audio_callback(void*, f32* out, u32 frames) {
+    g_cb_bank = g_bank; // one bank for the whole callback, whatever is loaded meanwhile
     // commands
     u32 w = atomic_load(&g_ring_w, MO_ACQUIRE);
     u32 r = g_ring_r;
@@ -1224,7 +1272,6 @@ static void init_tables() {
     for (const AdsrDef& d : k_adsr_defs) { k_adsr[d.smp] = d.adsr; have[d.smp] = true; }
     for (int i = 0; i < SMP_COUNT; ++i)
         if (!have[i]) { k_adsr[i] = Adsr{0.002f, 0.2f, 0.8f, 0.0f, 0.05f}; KV_WARN("sprocket", "sample %s has no envelope", k_smp_labels[i]); }
-    decode_bank();
     for (int i = 0; i < 256; ++i) {
         f32 f = (f32)i / 255.0f, sum = 0;
         const f32 d[4] = {1.0f + f, f, 1.0f - f, 2.0f - f};

@@ -1,0 +1,6 @@
+{
+  "//": "Sprocket Rally's assets: the sprites (art.bin) and the instrument samples (samples.bin), each baked by a script in tools/ and read by the game as it is.",
+  "rules": [
+    { "match": "*.bin", "meta": { "type": "data" } }
+  ]
+}

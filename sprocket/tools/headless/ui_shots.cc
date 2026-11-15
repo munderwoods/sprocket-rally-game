@@ -46,6 +46,11 @@ static TrackCard card(int i) {
 }
 
 int main(int argc, char** argv) {
+    { // the sprites live in a file now: load them before anything is drawn
+        char err[700];
+        const char* art = getenv("SPROCKET_ART") ? getenv("SPROCKET_ART") : ART_BIN;
+        if (!art_load(art, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+    }
     if (argc > 1) g_dir = argv[1];
     Allocator* a = mem_general();
     track_generate(3, g_gen);

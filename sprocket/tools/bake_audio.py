@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bakes Sprocket Rally's sample bank into src/audio_bank.h.
+"""Bakes Sprocket Rally's sample bank into assets/samples.bin (and its names into src/audio_bank.h).
 
 The instruments are taken from SoundFont (.sf2) files, except the engine's, which is
 synthesized here. Each is BRR-encoded exactly as the SNES stores samples (9-byte
@@ -20,6 +20,7 @@ ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 CHECK_ROOTS = "--check-roots" in sys.argv
 SRC = ARGS[0] if ARGS else os.path.expanduser(os.environ.get("SPROCKET_SF_DIR", "~/.local/src/sf2"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "audio_bank.h")
+OUT_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "samples.bin")   # the samples; the header has their names
 
 # Which SoundFont file, preset and (for drum kits) sample each instrument is taken from is
 # kept in a local table that is not part of the repository: tools/audio_sources.local.json
@@ -382,12 +383,6 @@ def main():
         f.write("// the short names the songs' notation picks instruments by (\"@LEAD\"), and the fuller ones for messages\n")
         f.write("inline const char* const k_smp_names[SMP_COUNT] = {\n    " + ", ".join('"%s"' % n for n in names) + "};\n")
         f.write("inline const char* const k_smp_labels[SMP_COUNT] = {\n    " + ", ".join('"%s"' % LABEL[n] for n in names) + "};\n\n")
-        f.write("struct BankSample { kv::u32 brr_offset, samples; kv::i32 loop_start; kv::u32 loop_end; kv::f32 rate, root, atten_db; };\n\n")
-        f.write("inline const BankSample k_bank[SMP_COUNT] = {\n")
-        for (name, off, n, ls, le, rate, root, att) in insts:
-            f.write("    {%d, %d, %d, %d, %.1ff, %.3ff, %.1ff}, // %s\n" % (off, n, ls, le, rate, root, att, name))
-        f.write("};\n")
-        f.write("constexpr kv::u32 k_bank_pcm_total = %d; // decoded samples, all instruments\n\n" % sum(i[2] for i in insts))
         f.write("// Each song's instrument set (a bit per SampleId), in SongId order; the sound effects'\n// samples are resident for every song.\n")
         f.write("constexpr int k_song_set_count = %d;\n" % len(SONG_ORDER))
         f.write("struct SongSet { const char* name; kv::u64 samples; };\n")
@@ -402,10 +397,27 @@ def main():
         for s in SFX_SAMPLES:
             mask |= 1 << names.index(s)
         f.write("constexpr kv::u64 k_sfx_samples = 0x%016xull;\n\n" % mask)
-        f.write("inline const kv::u8 k_brr[%d] = {\n" % total)
-        for i in range(0, total, 24):
-            f.write(",".join(str(b) for b in blob[i:i + 24]) + ",\n")
-        f.write("};\n\n} // namespace sr\n")
+        f.write("\n} // namespace sr\n")
+    # The samples themselves: one blob, laid out like a cartridge's sample data, a directory at
+    # its head and then the BRR blocks. "SRSM", u8 count, then 16 bytes an entry, little-endian:
+    #   0  u24 where the sample's first block is (from the start of the file)
+    #   3  u24 loop start, in samples (0xFFFFFF: it does not loop)
+    #   6  u24 loop end, in samples
+    #   9  u24 sample rate, in tenths of a hertz
+    #  12  u24 root key, in thousandths of a semitone
+    #  15  u8  attenuation, in tenths of a decibel
+    # A sample's length is not stored: it runs to the block whose header has the END bit.
+    def u24(v): return [v & 255, (v >> 8) & 255, (v >> 16) & 255]
+    head = 5 + 16 * len(insts)
+    rom = list(b"SRSM") + [len(insts)]
+    for (name, off, n, ls, le, rate, root, att) in insts:
+        rom += u24(head + off) + u24(0xFFFFFF if ls < 0 else ls) + u24(le) + u24(int(round(rate * 10))) + u24(int(round(root * 1000))) + [int(round(att * 10))]
+        assert blob[off + (n // 16 - 1) * 9] & 1 and not any(blob[off + i * 9] & 1 for i in range(n // 16 - 1)), "END flag on the last block only"
+    rom += list(blob)
+    os.makedirs(os.path.dirname(OUT_BIN), exist_ok=True)
+    with open(OUT_BIN + ".tmp", "wb") as f: f.write(bytes(rom))
+    os.replace(OUT_BIN + ".tmp", OUT_BIN)   # whole or not at all: a running game may be watching it
+    print("wrote", OUT_BIN, "(%d bytes)" % len(rom))
     print("wrote", OUT)
 
 

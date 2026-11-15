@@ -112,9 +112,34 @@ go blue, then orange, then purple; release for a mini-turbo (purple is the long 
     interpolation, ADSR, the noise generator, and echo with an 8-tap FIR filter.
   - The bank and echo buffer fit in 64 KB of audio RAM.
   - The music is original, written in a small tracker notation in that file.
-  - The instrument samples are baked into `src/audio_bank.h` by `tools/bake_audio.py`
+  - The instrument samples are baked into `assets/samples.bin` by `tools/bake_audio.py`
     from SoundFont files, listed in a local table that is not part of the repository
-    (the script's header describes it).
+    (the script's header describes it). The file is one blob laid out like a cartridge's
+    sample data: a directory at its head, then every instrument's BRR blocks.
+
+## Assets and hot reload
+
+The sprites and the samples are files, not code: `sprocket/assets/art.bin` (written by
+`tools/bake_art.py`) and `sprocket/assets/samples.bin` (by `tools/bake_audio.py`). The
+engine's asset cooker, goldberg, copies them into the game's asset tree at every build, and
+the game loads them from there at start. The headers `src/art.h` and `src/audio_bank.h`
+hold only the names the code uses.
+
+The running game looks at both files twice a second and loads either again when it has
+changed, so a sprite or an instrument can be changed without restarting:
+
+```bash
+build/linux-dev/bin/sprocket &          # the game, running
+python3 sprocket/tools/bake_art.py      # change something in the baker first; about 11 s
+kormake sprocket dev                    # cooks the new art.bin into the tree; the game shows "ART RELOADED"
+```
+
+`goldberg watch --roots build/linux-dev/goldberg/sprocket.roots` does the cooking by itself
+as soon as a baker has written its file, in place of the last line. A file that fails its
+checks (a sprite missing, a damaged sample) is refused and the game keeps what it had.
+
+The picture reaches the screen in the engine's Frame cycle (`sprocket.present`): the
+framebuffer is uploaded once per frame shown, and only if a tick has drawn since.
 
 ## Testing
 
@@ -151,4 +176,4 @@ Not everything in the repository is under that licence:
   v2-or-later, Hyllian's is MIT, and Lottes' two are public domain.
 - `crt_mattias.slangh` is a port of a shader published with no stated licence (Shadertoy's
   default terms are CC BY-NC-SA 3.0). It remains under its author's terms, not the GPL.
-- The instrument sample data in `sprocket/src/audio_bank.h` is not covered by this licence.
+- The instrument sample data in `sprocket/assets/samples.bin` is not covered by this licence.

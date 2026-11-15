@@ -36,6 +36,11 @@ static const TrackDef& pick(int t) {
 }
 
 int main(int argc, char** argv) {
+    { // the sprites live in a file now: load them before anything is drawn
+        char err[700];
+        const char* art = getenv("SPROCKET_ART") ? getenv("SPROCKET_ART") : ART_BIN;
+        if (!art_load(art, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+    }
     if (argc < 2) { fprintf(stderr, "usage: see headless.cc\n"); return 2; }
     Allocator* a = mem_general();
     if (!strcmp(argv[1], "map") && argc >= 4) {

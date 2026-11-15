@@ -35,6 +35,8 @@ sync)
     sshpass -e scp "${OPTS[@]}" "$LOCAL"/sprocket/src/*.cc "$LOCAL"/sprocket/src/*.h "$PC_USER@$HOST:$REMOTE_SCP/sprocket/src/" &&
     sshpass -e scp "${OPTS[@]}" "$LOCAL"/sprocket/shaders/* "$PC_USER@$HOST:$REMOTE_SCP/sprocket/shaders/" &&
     sshpass -e scp "${OPTS[@]}" "$LOCAL"/sprocket/module.lua "$PC_USER@$HOST:$REMOTE_SCP/sprocket/" &&
+    rsh "cmd /c \"if not exist $REMOTE\\sprocket\\assets mkdir $REMOTE\\sprocket\\assets\"" &&
+    sshpass -e scp "${OPTS[@]}" "$LOCAL"/sprocket/assets/* "$PC_USER@$HOST:$REMOTE_SCP/sprocket/assets/" &&
     sshpass -e scp "${OPTS[@]}" "$LOCAL"/README.md "$PC_USER@$HOST:$REMOTE_SCP/" &&
     rsh "cmd /c \"if not exist $REMOTE\\sprocket\\tools mkdir $REMOTE\\sprocket\\tools\"" &&
     sshpass -e scp "${OPTS[@]}" "$LOCAL"/sprocket/tools/sprocket.ico "$PC_USER@$HOST:$REMOTE_SCP/sprocket/tools/" &&
