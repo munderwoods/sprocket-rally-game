@@ -85,6 +85,7 @@ struct Game {
     u8         mini[MINI_SLOTS][MINI * MINI] = {};
     int        mini_len[MINI_SLOTS] = {};
     bool       mini_ok[MINI_SLOTS] = {};
+    int        mini_next = 0;         // the next hand-made track whose minimap is still to build
     u32        mini_seed[MINI_SLOTS] = {};
     // the race in hand
     int        cur_track = -1;    // k_tracks index, or -1 for a generated track
@@ -748,8 +749,10 @@ void sprocket_tick(TickContext& ctx) {
             if (window->native_handle() && (g.set.display != 0 || g.set.monitor != 0)) display_apply(window->native_handle(), g.set.display, g.set.monitor);
         }
         display_set_icon(window->native_handle());
-        // every track's minimap, for the track and cup screens
-        for (int i = 0; i < hand_tracks(); ++i) build_mini(g, i, k_tracks[i], 0, g.fb.alloc);
+        // every track's minimap, for the track and cup screens, is built one a tick from
+        // here on (below): building them all before the first frame held the window black
+        // for over a second, and for most of a minute in an unoptimised build
+        g.mini_next = 0;
         start_attract(g, g.fb.alloc);
         // testing: SPROCKET_TRACK=n races track n straight away (n = track count: random)
         if (const char* tr = getenv("SPROCKET_TRACK")) {
@@ -761,6 +764,11 @@ void sprocket_tick(TickContext& ctx) {
             g.state = State::Racing;
         }
         KV_INFO("sprocket", "Enter starts; Tab 4:3/16:9; Q/E or F2/F3 cycle CRT shaders; F11 fullscreen; Esc quits from the title");
+    } else if (g.mini_next < hand_tracks() && g.state != State::Racing && g.state != State::Paused) {
+        // one minimap a tick, from the second tick on and never during a race: the title is
+        // up while they build, and the track and cup screens show each as it arrives
+        build_mini(g, g.mini_next, k_tracks[g.mini_next], 0, g.fb.alloc);
+        ++g.mini_next;
     }
     Allocator* a = g.fb.alloc;
 

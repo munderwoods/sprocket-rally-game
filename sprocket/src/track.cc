@@ -1496,18 +1496,31 @@ void track_build(Track& t, const TrackDef& def, Allocator* alloc) {
         if (y0 < 0) y0 = 0;
         if (x1 >= MAP) x1 = MAP - 1;
         if (y1 >= MAP) y1 = MAP - 1;
-        for (int y = y0; y <= y1; ++y)
-            for (int x = x0; x <= x1; ++x) {
-                vec2 p{(f32)x + 0.5f, (f32)y + 0.5f};
-                f32 uu = l2 > 0 ? clampf(dot(p - a, ab) / l2, 0.0f, 1.0f) : 0;
-                vec2 q = a + ab * uu;
-                f32 dd = length_sq(p - q);
-                u32 k = (u32)(y * MAP + x);
-                if (dd < d2[k]) {
-                    d2[k] = dd; spar[k] = t.dist[i] + seg_len * uu; hwt[k] = w0 + (w1 - w0) * uu;
-                    side[k] = (ab.x * (p.y - a.y) - ab.y * (p.x - a.x)) >= 0 ? 1 : -1;
+        // This is the builder's inner loop: about a hundred million texel-segment pairs a
+        // track. It is written out in plain floats over plain pointers (no vec2 operators,
+        // no checked Array access) so that an unoptimised build, where each of those is a
+        // call, builds a track in a second and not in eight. The arithmetic is what the
+        // operators did, in their order: the result is the same to the bit.
+        f32* d2p = d2.data; f32* sparp = spar.data; f32* hwtp = hwt.data; i8* sidep = side.data;
+        const f32 ax = a.x, ay = a.y, abx = ab.x, aby = ab.y, dist_i = t.dist[i], dw = w1 - w0;
+        for (int y = y0; y <= y1; ++y) {
+            const f32 py = (f32)y + 0.5f, pay = py - ay;
+            u32 k = (u32)(y * MAP + x0);
+            for (int x = x0; x <= x1; ++x, ++k) {
+                const f32 px = (f32)x + 0.5f, pax = px - ax;
+                f32 uu = 0;
+                if (l2 > 0) {
+                    uu = (pax * abx + pay * aby) / l2;
+                    uu = uu < 0.0f ? 0.0f : (uu > 1.0f ? 1.0f : uu);
+                }
+                const f32 ex = px - (ax + abx * uu), ey = py - (ay + aby * uu);
+                const f32 dd = ex * ex + ey * ey;
+                if (dd < d2p[k]) {
+                    d2p[k] = dd; sparp[k] = dist_i + seg_len * uu; hwtp[k] = w0 + dw * uu;
+                    sidep[k] = (abx * pay - aby * pax) >= 0 ? 1 : -1;
                 }
             }
+        }
     }
 
     t.color.resize_fill(MAP * MAP, 0);
