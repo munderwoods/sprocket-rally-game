@@ -170,6 +170,45 @@ bool ghost_save(int track, int ch, f32 time, const GhostSample* s, int n) {
     return fclose(fp) == 0 && ok;
 }
 
+// ---- tuning -----------------------------------------------------------------------------------
+static bool tuning_path(char* out, int cap, bool make_dirs) {
+    if (!records_path(out, cap, make_dirs)) return false;
+    char* slash = strrchr(out, '/');
+    if (!slash || (int)(slash - out) + 16 >= cap) return false;
+    snprintf(slash, (size_t)(cap - (int)(slash - out)), "/tuning.txt");
+    return true;
+}
+
+bool tuning_load() {
+    char path[512];
+    if (!tuning_path(path, sizeof path, false)) return false;
+    FILE* fp = fopen(path, "r");
+    if (!fp) return false;
+    char line[128], key[64];
+    float v = 0;
+    while (fgets(line, sizeof line, fp))
+        if (sscanf(line, "%63s %f", key, &v) == 2)
+            for (int i = 0; i < TUNE_FIELDS; ++i)
+                if (!strcmp(key, k_tune_fields[i].key) && v >= k_tune_fields[i].lo && v <= k_tune_fields[i].hi) g_tune.*k_tune_fields[i].at = v;
+    fclose(fp);
+    return true;
+}
+
+// Only what differs from the defaults is written; nothing differing removes the file.
+bool tuning_save() {
+    char path[512];
+    if (!tuning_path(path, sizeof path, true)) return false;
+    const Tuning def;
+    bool any = false;
+    for (int i = 0; i < TUNE_FIELDS; ++i) if (g_tune.*k_tune_fields[i].at != def.*k_tune_fields[i].at) any = true;
+    if (!any) { remove(path); return true; }
+    FILE* fp = fopen(path, "w");
+    if (!fp) return false;
+    for (int i = 0; i < TUNE_FIELDS; ++i)
+        if (g_tune.*k_tune_fields[i].at != def.*k_tune_fields[i].at) fprintf(fp, "%s %g\n", k_tune_fields[i].key, (double)(g_tune.*k_tune_fields[i].at));
+    return fclose(fp) == 0;
+}
+
 bool records_save(const Records& rec, const char* path) {
     char buf[512];
     if (!path) { if (!records_path(buf, sizeof buf, true)) return false; path = buf; }

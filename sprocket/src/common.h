@@ -424,6 +424,52 @@ void snd_volume(f32 gain);    // the master volume, 0..1
 // a later load swaps the samples under the music as it plays. False (with why in `err`) if
 // the file cannot be used, leaving what was loaded in place.
 bool snd_load_bank(const char* path, char* err, int cap);
+// ---- tuning -----------------------------------------------------------------------------------
+// The numbers behind how a kart handles and how hard the rivals are. They are values, not
+// constants, so the tuning panel (F4) can change them while a race runs; what is saved
+// there is kept in tuning.txt beside the settings and read at start.
+struct Tuning {
+    f32 top = 168.0f, accel = 118.0f, brake = 260.0f; // texels a second, and a second squared
+    f32 turn = 2.35f, grip = 11.0f;
+    f32 hop = 58.0f, gravity = 420.0f;
+    f32 drift_angle = 0.52f;        // how far the body hangs out in a drift, radians (0.52: two sprite steps)
+    f32 drift_min_speed = 60.0f;
+    f32 charge1 = 1.0f, charge2 = 2.0f, charge3 = 3.4f; // seconds of drift to each tier of sparks
+    f32 turbo1 = 0.45f, turbo2 = 0.9f, turbo3 = 1.6f;   // seconds of boost each tier gives
+    f32 band = 0.35f;               // how strongly rivals speed up behind the player and ease off ahead
+    f32 easy_speed = 0.085f, easy_accel = 0.06f, easy_corner = 0.16f; // what easy takes off the rivals
+    f32 hard_speed = 0.09f, hard_accel = 0.10f, hard_corner = 0.03f;  // what hard gives them
+};
+inline Tuning g_tune;
+struct TuneField { const char* key; const char* label; f32 Tuning::*at; f32 step, lo, hi; };
+inline const TuneField k_tune_fields[] = {
+    {"top", "Top speed", &Tuning::top, 2.0f, 80.0f, 320.0f},
+    {"accel", "Acceleration", &Tuning::accel, 2.0f, 30.0f, 400.0f},
+    {"brake", "Braking", &Tuning::brake, 10.0f, 60.0f, 800.0f},
+    {"turn", "Turn rate", &Tuning::turn, 0.05f, 0.8f, 5.0f},
+    {"grip", "Grip", &Tuning::grip, 0.5f, 2.0f, 30.0f},
+    {"hop", "Hop height", &Tuning::hop, 2.0f, 20.0f, 160.0f},
+    {"gravity", "Gravity", &Tuning::gravity, 10.0f, 100.0f, 1200.0f},
+    {"drift_angle", "Drift angle", &Tuning::drift_angle, 0.02f, 0.1f, 1.2f},
+    {"drift_min_speed", "Drift min speed", &Tuning::drift_min_speed, 5.0f, 0.0f, 160.0f},
+    {"charge1", "Sparks 1 (s)", &Tuning::charge1, 0.1f, 0.2f, 6.0f},
+    {"charge2", "Sparks 2 (s)", &Tuning::charge2, 0.1f, 0.4f, 8.0f},
+    {"charge3", "Sparks 3 (s)", &Tuning::charge3, 0.1f, 0.6f, 10.0f},
+    {"turbo1", "Turbo 1 (s)", &Tuning::turbo1, 0.05f, 0.0f, 4.0f},
+    {"turbo2", "Turbo 2 (s)", &Tuning::turbo2, 0.05f, 0.0f, 4.0f},
+    {"turbo3", "Turbo 3 (s)", &Tuning::turbo3, 0.05f, 0.0f, 4.0f},
+    {"band", "Catch-up", &Tuning::band, 0.05f, 0.0f, 1.5f},
+    {"easy_speed", "Easy: speed cut", &Tuning::easy_speed, 0.005f, 0.0f, 0.4f},
+    {"easy_accel", "Easy: accel cut", &Tuning::easy_accel, 0.01f, 0.0f, 0.6f},
+    {"easy_corner", "Easy: corner cut", &Tuning::easy_corner, 0.01f, 0.0f, 0.6f},
+    {"hard_speed", "Hard: speed gain", &Tuning::hard_speed, 0.005f, 0.0f, 0.4f},
+    {"hard_accel", "Hard: accel gain", &Tuning::hard_accel, 0.01f, 0.0f, 0.6f},
+    {"hard_corner", "Hard: corner gain", &Tuning::hard_corner, 0.01f, 0.0f, 0.3f},
+};
+constexpr int TUNE_FIELDS = (int)(sizeof k_tune_fields / sizeof k_tune_fields[0]);
+bool tuning_load(); // tuning.txt over the defaults; false if there is none
+bool tuning_save();
+
 // The sprites, from assets/art.bin, into the names art.h declares; again to reload them.
 bool art_load(const char* path, char* err, int cap);
 

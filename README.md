@@ -141,6 +141,22 @@ checks (a sprite missing, a damaged sample) is refused and the game keeps what i
 The picture reaches the screen in the engine's Frame cycle (`sprocket.present`): the
 framebuffer is uploaded once per frame shown, and only if a tick has drawn since.
 
+## Developer panel (dev builds only)
+
+`F4` in a dev build opens a panel down the right of the window (the engine's Krome UI;
+it draws on Vulkan, so Linux). It is for tuning by feel while driving:
+
+- **Handling, drift and turbo, rivals:** every number in `Tuning` (`src/common.h`) with
+  `-`/`+` (one step) and `<<`/`>>` (five). A change takes effect on the next tick.
+- **The race:** pause, restart, previous and next track, difficulty, the kart on autopilot,
+  slow motion (1/2, 1/4, and double), the next item into the slot, ten bolts.
+- **Save tuning** writes what differs from the built-in numbers to `tuning.txt` beside the
+  settings; a dev build reads it at start. **Reset tuning** goes back to the built-in ones.
+
+None of this is in a ship build: `kormake sprocket ship` compiles the panel out, reads no
+`tuning.txt`, and does not watch its asset files. To make tuned numbers the game's own,
+put them in `Tuning`'s defaults.
+
 ## Testing
 
 - `SPROCKET_TRACK=4 build/linux-dev/bin/sprocket` jumps straight into a race on that

@@ -21,7 +21,7 @@ const Character k_chars[RACERS] = {
      {rgb(248, 48, 200), rgb(64, 232, 248)}, 1.06f, 0.96f, 1.00f, 0.8f, 0.00f, 1.30f, 1.05f, 0.50f, 0.80f, IT_EMP},
     {"SIR CLANKS", "WAR CHARIOT", {"KNIGHT. HAS NOT TAKEN THE", "ARMOR OFF SINCE 1192."},
      {rgb(184, 192, 208), rgb(200, 40, 48)}, 1.02f, 0.92f, 0.95f, 1.6f, 0.20f, 0.95f, 0.95f, 0.40f, 0.30f, IT_SHIELD},
-    {"GRANNY GOGGLES", "ROCKET SCOOTER", {"92 YEARS YOUNG. HAS NEVER", "ONCE TOUCHED THE BRAKE."},
+    {"GRANNY GOGGLES", "ROCKET SCOOTER", {"92 YEARS YOUNG. HAS NEVER", "ONCE TOUCHED THE g_tune.brake."},
      {rgb(216, 48, 48), rgb(240, 224, 184)}, 1.01f, 1.04f, 1.03f, 0.8f, 0.10f, 1.10f, 1.25f, 0.30f, 1.00f, IT_NITRO},
 };
 
@@ -31,20 +31,15 @@ const char* item_name(int item) {
 }
 
 // tuning, texels and seconds
-constexpr f32 TOP = 168.0f, ACCEL = 118.0f, BRAKE = 260.0f, REVERSE_MAX = 45.0f;
-constexpr f32 TURN = 2.35f, GRIP = 11.0f;
+// (the numbers that shape the handling are in g_tune, common.h: the tuning panel changes them live)
+constexpr f32 REVERSE_MAX = 45.0f;
 constexpr f32 KART_R = 4.5f;
-constexpr f32 HOP_V = 58.0f, GRAVITY = 420.0f;
 // Drifting follows SRB2Kart's model, scaled to these tracks: while drifting the kart's body
 // turns at a rate set by the drift (steering only bends it: outward 25%, neutral ~62%,
-// inward 100% of normal full lock) and its thrust points DRIFT_ANGLE outward of where the
+// inward 100% of normal full lock) and its thrust points g_tune.drift_angle outward of where the
 // body faces, so the body hangs into the corner while the line you travel bends gently.
 // Holding it charges three tiers of mini-turbo; releasing swings the body back in line.
-constexpr f32 DRIFT_ANGLE = 0.52f;      // 30 degrees: two sprite steps
 constexpr f32 DRIFT_RAMP = 0.15f;       // seconds for the body to swing in or out
-constexpr f32 CHARGE_1 = 1.0f, CHARGE_2 = 2.0f, CHARGE_3 = 3.4f;
-constexpr f32 TURBO_1 = 0.45f, TURBO_2 = 0.9f, TURBO_3 = 1.6f;
-constexpr f32 DRIFT_MIN_SPEED = 60.0f;
 
 static vec2 dir(f32 a) { return vec2{kv::cos(a), kv::sin(a)}; }
 
@@ -265,7 +260,7 @@ static void ai_controls(Race& r, Racer& k, int idx, f32 dt) {
     track_point(r.track, k.s + 18.0f + 0.42f * speed + 30.0f, &t2);
     f32 bend = kv::fabs(wrap_pi(kv::atan2(t2.y, t2.x) - kv::atan2(t1.y, t1.x))) / (0.42f * speed + 30.0f); // radians per texel
     // easy rivals lift early for corners; hard ones carry a little more speed through
-    f32 safe = bend > 0.0005f ? (TURN * ch.turn * (1.22f - 0.16f * easy + 0.03f * bold)) / bend : 1e9f;
+    f32 safe = bend > 0.0005f ? (g_tune.turn * ch.turn * (1.22f - g_tune.easy_corner * easy + g_tune.hard_corner * bold)) / bend : 1e9f;
     bool ramp_ahead = false;
     for (f32 q = 0; q < 90.0f; q += 15.0f) {
         vec2 p = track_point(r.track, k.s + q, nullptr);
@@ -279,7 +274,7 @@ static void ai_controls(Race& r, Racer& k, int idx, f32 dt) {
     if (k.ai_drift) {
         c.hop = true;
         f32 into = err * (f32)k.drift_dir;
-        if (k.drifting && (into < -0.04f || (into < 0.03f && k.drift_charge >= (bold > 0 && into > 0.0f ? CHARGE_2 : CHARGE_1)) || k.drift_charge > CHARGE_3 + 0.1f)) { k.ai_drift = false; c.hop = false; }
+        if (k.drifting && (into < -0.04f || (into < 0.03f && k.drift_charge >= (bold > 0 && into > 0.0f ? g_tune.charge2 : g_tune.charge1)) || k.drift_charge > g_tune.charge3 + 0.1f)) { k.ai_drift = false; c.hop = false; }
         if (!k.drifting && !k.airborne && !c.hop_pressed) k.ai_drift = false;
     }
     // items, by personality
@@ -370,7 +365,7 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
     }
 
     // the frame the engine pushes along: the body's heading, less the drift's outward angle
-    vec2 f = dir(k.heading - (f32)k.drift_dir * DRIFT_ANGLE * k.drift_ramp), rt{-f.y, f.x};
+    vec2 f = dir(k.heading - (f32)k.drift_dir * g_tune.drift_angle * k.drift_ramp), rt{-f.y, f.x};
     f32 vf = dot(k.vel, f), vl = dot(k.vel, rt);
     u8 surf = track_surface(r.track, k.pos.x, k.pos.y);
     if (k.airborne) surf = S_ROAD; // nothing underfoot matters in the air
@@ -386,7 +381,7 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
     const f32 e = r.cpu_level < 1.0f ? 1.0f - r.cpu_level : 0.0f;
     const f32 h = r.cpu_level > 1.0f && r.track.theme->road != RS_SPACE ? r.cpu_level - 1.0f : 0.0f;
     // (on hard the slower rivals are brought most of the way up to the best of them)
-    f32 top = TOP * ch.top * (1.0f + 0.012f * (f32)k.bolts) * (k.human ? 1.0f : (h > 0 ? k.skill + (1.0f - k.skill) * 0.7f * h : k.skill));
+    f32 top = g_tune.top * ch.top * (1.0f + 0.012f * (f32)k.bolts) * (k.human ? 1.0f : (h > 0 ? k.skill + (1.0f - k.skill) * 0.7f * h : k.skill));
     if (!k.human && r.player >= 0) {
         // rubber band against the player
         f32 ref = r.racers[r.player].total; // with two players, the one in front
@@ -395,13 +390,13 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
         // (how far a leader eases off for you: more on easy, hardly at all on hard)
         // normal: a leader eases off by up to 10% and a straggler gains up to 7%. Easy leaders
         // wait more and stragglers get no help; hard leaders barely wait and stragglers fly.
-        top *= clampf(1.0f - gap * 0.35f, 0.9f - 0.05f * e + 0.08f * h, (1.03f + 0.04f * 1.0f) - 0.07f * e + 0.05f * h);
+        top *= clampf(1.0f - gap * g_tune.band, 0.9f - 0.05f * e + 0.08f * h, (1.03f + 0.04f * 1.0f) - 0.07f * e + 0.05f * h);
     }
     if (off) top *= 0.5f + 0.3f * ch.offroad;
     if (mud) top *= 0.6f + 0.25f * ch.offroad;
     if (ford) top *= 0.74f + 0.16f * ch.offroad;
     if (k.draft > 1.0f) top *= 1.07f; // a tow from the kart ahead
-    if (!k.human) top *= (0.955f + 0.045f * 1.0f) - 0.085f * e + 0.09f * h; // normal's own figure, less easy's cut or plus hard's gain
+    if (!k.human) top *= (0.955f + 0.045f * 1.0f) - g_tune.easy_speed * e + g_tune.hard_speed * h; // normal's own figure, less easy's cut or plus hard's gain
     if (k.stun > 0) { top *= 0.55f; k.stun -= dt; }
     if (k.magnet > 0) {
         k.magnet -= dt;
@@ -417,7 +412,7 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
             }
         }
     }
-    f32 accel = ACCEL * ch.accel * (k.human ? 1.0f : 1.0f - 0.06f * e + 0.10f * h); // hard rivals pick up speed sooner out of corners and after a hit
+    f32 accel = g_tune.accel * ch.accel * (k.human ? 1.0f : 1.0f - g_tune.easy_accel * e + g_tune.hard_accel * h); // hard rivals pick up speed sooner out of corners and after a hit
     if (k.boost > 0) { top *= 1.38f; accel *= 3.0f; k.boost -= dt; }
 
     // engine
@@ -425,8 +420,8 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
         if (vf < top) vf += accel * (1.0f - mxf(vf, 0.0f) / top * 0.75f) * dt;
         else vf -= (vf - top) * 2.0f * dt;
     } else if (c.brake) {
-        if (vf > 0) vf -= BRAKE * dt;
-        else if (vf > -REVERSE_MAX) vf -= ACCEL * 0.6f * dt;
+        if (vf > 0) vf -= g_tune.brake * dt;
+        else if (vf > -REVERSE_MAX) vf -= g_tune.accel * 0.6f * dt;
     } else {
         vf -= vf * 0.9f * dt;
     }
@@ -457,9 +452,9 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
         if (!k.drifting && k.drift_ramp <= 0.0f) k.yaw_avg += (yr - k.yaw_avg) * mnf(1.0f, 6.0f * dt);
     }
     bool landed = false;
-    if (c.hop_pressed && !k.airborne && !k.drifting && vf > 30.0f && k.spin <= 0) { k.airborne = true; k.vz = HOP_V * (r.track.theme->gravity < 1.0f ? r.track.theme->gravity * 1.3f : 1.0f); if (k.human) sfx(r, SFX_HOP, &k); }
+    if (c.hop_pressed && !k.airborne && !k.drifting && vf > 30.0f && k.spin <= 0) { k.airborne = true; k.vz = g_tune.hop * (r.track.theme->gravity < 1.0f ? r.track.theme->gravity * 1.3f : 1.0f); if (k.human) sfx(r, SFX_HOP, &k); }
     if (k.airborne) {
-        k.z += k.vz * dt; k.vz -= GRAVITY * r.track.theme->gravity * dt;
+        k.z += k.vz * dt; k.vz -= g_tune.gravity * r.track.theme->gravity * dt;
         k.air_time += dt;
         if (k.z <= 0) {
             k.z = 0; k.vz = 0; k.airborne = false;
@@ -467,7 +462,7 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
             landed = true;
         }
     }
-    if (c.hop && !k.airborne && !k.drifting && k.spin <= 0 && vf > DRIFT_MIN_SPEED) {
+    if (c.hop && !k.airborne && !k.drifting && k.spin <= 0 && vf > g_tune.drift_min_speed) {
         int want = 0;
         if (kv::fabs(c.steer) > 0.05f) want = c.steer > 0 ? 1 : -1;
         else if (landed && kv::fabs(k.yaw_avg) > 0.12f) want = k.yaw_avg > 0 ? 1 : -1; // no stick, but already curving: that way
@@ -476,10 +471,10 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
     if (k.drifting) {
         if (!c.hop || k.spin > 0) {
             // release: the mini-turbo for the tier reached
-            f32 turbo = ch.turbo * (k.drift_charge >= CHARGE_3 ? TURBO_3 : (k.drift_charge >= CHARGE_2 ? TURBO_2 : (k.drift_charge >= CHARGE_1 ? TURBO_1 : 0.0f)));
+            f32 turbo = ch.turbo * (k.drift_charge >= g_tune.charge3 ? g_tune.turbo3 : (k.drift_charge >= g_tune.charge2 ? g_tune.turbo2 : (k.drift_charge >= g_tune.charge1 ? g_tune.turbo1 : 0.0f)));
             if (turbo > 0 && k.spin <= 0) { k.boost = mxf(k.boost, turbo); sfx(r, SFX_MINITURBO, &k); }
             k.drifting = false; k.drift_charge = 0;
-        } else if (vf < DRIFT_MIN_SPEED * 0.6f) {
+        } else if (vf < g_tune.drift_min_speed * 0.6f) {
             k.drifting = false; k.drift_charge = 0; // too slow: the drift falls apart, no turbo
         } else {
             f32 cs = c.steer * (f32)k.drift_dir; // countersteer: +1 into the drift, -1 out of it
@@ -487,8 +482,8 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
             f32 rate = 1.0f + 0.35f * mxf(cs, 0.0f) - 0.45f * mxf(-cs, 0.0f);
             if (!off && !mud) k.drift_charge += rate * ch.charge * dt;
             if (k.human) {
-                if ((before < CHARGE_1 && k.drift_charge >= CHARGE_1) || (before < CHARGE_2 && k.drift_charge >= CHARGE_2) ||
-                    (before < CHARGE_3 && k.drift_charge >= CHARGE_3)) sfx(r, SFX_CHARGE, &k);
+                if ((before < g_tune.charge1 && k.drift_charge >= g_tune.charge1) || (before < g_tune.charge2 && k.drift_charge >= g_tune.charge2) ||
+                    (before < g_tune.charge3 && k.drift_charge >= g_tune.charge3)) sfx(r, SFX_CHARGE, &k);
                 if ((int)(before * 6.0f) != (int)(k.drift_charge * 6.0f)) sfx(r, SFX_SKID, &k);
             }
         }
@@ -498,7 +493,7 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
         f32 old = k.drift_ramp;
         f32 target = k.drifting ? 1.0f : 0.0f;
         k.drift_ramp += clampf(target - old, -dt / DRIFT_RAMP, dt / DRIFT_RAMP);
-        k.heading += (f32)k.drift_dir * DRIFT_ANGLE * (k.drift_ramp - old);
+        k.heading += (f32)k.drift_dir * g_tune.drift_angle * (k.drift_ramp - old);
         if (k.drift_ramp <= 0.0f && !k.drifting) k.drift_dir = 0;
     }
 
@@ -509,17 +504,17 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
         f32 cs = c.steer * (f32)k.drift_dir;
         steer = (f32)k.drift_dir * (0.625f + 0.375f * cs);
     }
-    f32 turn = TURN * ch.turn * (k.airborne ? 0.6f : 1.0f);
+    f32 turn = g_tune.turn * ch.turn * (k.airborne ? 0.6f : 1.0f);
     k.heading += steer * turn * speed_k * (vf < 0 ? -1.0f : 1.0f) * dt;
     // a spin-out is drawn (render.cc) but never changes where the kart is heading
 
     // grip, in the frame of the new push direction: sideways motion bleeds away, so the
     // kart's path bends toward where the engine pushes it
     k.vel = f * vf + rt * vl;
-    f = dir(k.heading - (f32)k.drift_dir * DRIFT_ANGLE * k.drift_ramp);
+    f = dir(k.heading - (f32)k.drift_dir * g_tune.drift_angle * k.drift_ramp);
     rt = vec2{-f.y, f.x};
     vf = dot(k.vel, f); vl = dot(k.vel, rt);
-    f32 grip = GRIP * (k.drifting ? 0.75f : 1.0f) * r.track.theme->grip * (ice ? 0.35f : 1.0f);
+    f32 grip = g_tune.grip * (k.drifting ? 0.75f : 1.0f) * r.track.theme->grip * (ice ? 0.35f : 1.0f);
     if (k.airborne) grip *= 0.25f;
     vl *= kv::exp(-grip * dt);
     k.vel = f * vf + rt * vl;
@@ -567,13 +562,13 @@ static void kart_tick(Race& r, Racer& k, int idx, f32 dt) {
     if (k.stun > 0 && r.rng.chance(0.5f))
         spawn_part(r, k.pos, 6, vec2{r.rng.range(-20.0f, 20.0f), r.rng.range(-20.0f, 20.0f)}, 40.0f, 0.2f, (r.rng.next() & 1) ? rgb(120, 232, 255) : rgb(255, 255, 255), 1.0f, false);
     if (k.drifting && !k.airborne) {
-        u32 col = k.drift_charge >= CHARGE_3 ? ((r.rng.next() & 1) ? rgb(208, 96, 255) : rgb(255, 120, 232))
-                : k.drift_charge >= CHARGE_2 ? rgb(255, 144, 32) : (k.drift_charge >= CHARGE_1 ? rgb(80, 168, 255) : rgb(232, 232, 232));
+        u32 col = k.drift_charge >= g_tune.charge3 ? ((r.rng.next() & 1) ? rgb(208, 96, 255) : rgb(255, 120, 232))
+                : k.drift_charge >= g_tune.charge2 ? rgb(255, 144, 32) : (k.drift_charge >= g_tune.charge1 ? rgb(80, 168, 255) : rgb(232, 232, 232));
         vec2 bf = dir(k.heading), brt{-bf.y, bf.x};
         for (int side = -1; side <= 1; side += 2) {
             vec2 wheel = k.pos - bf * 4.0f + brt * (3.0f * (f32)side);
             if (r.rng.chance(0.7f))
-                spawn_part(r, wheel, 1, rt * r.rng.range(-25.0f, 25.0f) - f * 20.0f, r.rng.range(20.0f, 60.0f), 0.25f, col, k.drift_charge >= CHARGE_1 ? 2.0f : 1.0f, false);
+                spawn_part(r, wheel, 1, rt * r.rng.range(-25.0f, 25.0f) - f * 20.0f, r.rng.range(20.0f, 60.0f), 0.25f, col, k.drift_charge >= g_tune.charge1 ? 2.0f : 1.0f, false);
         }
     }
     if (off && kv::fabs(vf) > 40.0f && r.rng.chance(0.5f))

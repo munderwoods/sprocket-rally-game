@@ -10,6 +10,7 @@
 #include "korvid/core/engine.h"
 #include "korvid/core/log.h"
 #include "korvid/frameloop/frameloop.h"
+#include "korvid/krome/krome.h"
 #include "korvid/platform/io.h"
 #include "korvid/platform_hid/events.h"
 #include "korvid/platform_hid/host_window.h"
@@ -137,6 +138,12 @@ struct Game {
     // the two asset files, and what they looked like when last loaded: a change is reloaded
     char       art_path[512] = {}, bank_path[512] = {};
     i64        art_stamp = 0, bank_stamp = 0;
+    // the developer's panel (dev builds only): tuning, and the race at arm's length
+    Name       dev_screen{};
+    bool       dev_open = false;
+    f32        dev_speed = 1.0f;  // how fast the race's clock runs
+    u64        dev_field[TUNE_FIELDS][4] = {}; // each field's four buttons, by the name the screen gives them
+    u64        dev_action[16] = {};
 };
 
 // menu.cc's default bindings are written as numbers: hold them to the engine's enum
@@ -523,7 +530,8 @@ bool load_assets(Game& g) {
     return true;
 }
 
-// Twice a second: has either file been cooked again? Then it is loaded in place, between
+#if defined(KV_DEV) && KV_DEV
+// Dev builds only. Twice a second: has either file been cooked again? Then it is loaded in place, between
 // two ticks, and what is on screen or playing changes with it. A file caught half written
 // is refused by its loader and tried again at the next look.
 void reload_assets(Game& g) {
@@ -538,6 +546,69 @@ void reload_assets(Game& g) {
         else KV_WARN("sprocket", "samples not reloaded: %s", err);
     }
 }
+#endif
+
+// ---- the developer's panel ----------------------------------------------------------------------
+// A Krome screen down the right of the window, opened with F4, in dev builds only: every
+// handling and difficulty number with buttons to nudge it while a race runs, and the race
+// itself (pause, restart, another track, slow motion, the kart on autopilot, an item in
+// hand). A ship build has none of this, reads no tuning file and never looks at its
+// asset files again after start.
+#if defined(KV_DEV) && KV_DEV
+enum { DA_PAUSE, DA_RESTART, DA_TRACK_PREV, DA_TRACK_NEXT, DA_DIFF, DA_AUTO, DA_SPEED, DA_ITEM, DA_BOLTS, DA_RESET, DA_SAVE, DA_COUNT };
+static const char* const k_dev_actions[DA_COUNT] = {"pause", "restart", "trackprev", "tracknext", "diff", "auto", "speed", "item", "bolts", "reset", "save"};
+
+void dev_value_text(char* out, int cap, f32 v) {
+    snprintf(out, (size_t)cap, "%.3f", (double)v);
+    int n = (int)strlen(out);
+    while (n > 0 && out[n - 1] == '0') out[--n] = 0; // 2.350 -> 2.35, 168.000 -> 168
+    if (n > 0 && out[n - 1] == '.') out[--n] = 0;
+}
+
+void dev_show_values(Engine& e, Game& g) {
+    char key[16], val[32];
+    for (int i = 0; i < TUNE_FIELDS; ++i) {
+        snprintf(key, sizeof key, "v%d", i);
+        dev_value_text(val, sizeof val, g_tune.*k_tune_fields[i].at);
+        krome_set(e, g.dev_screen, key, val);
+    }
+}
+
+void dev_open_panel(Engine& e, Game& g) {
+    static char src[24000];
+    int n = 0;
+    auto put = [&](const char* text) { if (n < (int)sizeof src - 2400) n += snprintf(src + n, sizeof src - (size_t)n, "%s", text); };
+    auto add = [&](const char* fmt, auto a) { if (n < (int)sizeof src - 400) n += snprintf(src + n, sizeof src - (size_t)n, fmt, a); };
+    put("local function b(id, label, w) return hit { id = id, event = 'dev', w = w or 24, pad = { 0, 3 }, radius = 3, bg = '#2a3550',\n"
+        "  looks = { hover = { bg = '#3d4d78' }, pressed = { bg = '#5068a8' } }, center = true, middle = true, text { label } } end\n"
+        "local function r(i, label) return row { gap = 3, middle = true, text { label, w = 122, color = '#aab4c8' },\n"
+        "  b('f' .. i .. 'a', '<<', 28), b('f' .. i .. 'b', '-'), text { '{v' .. i .. '}', w = 56, center = true }, b('f' .. i .. 'c', '+'), b('f' .. i .. 'd', '>>', 28) } end\n"
+        "local function head(s) return text { s, color = '#6fd0ff', size = 13 } end\n"
+        "return { model = { state = '', track = '', info = '', note = '' }, on = { dev = function() end },\n"
+        " root = row { w = 'fill', h = 'fill', right = true,\n"
+        "  col { w = 332, h = 'fill', pad = 10, gap = 3, bg = '#0c1020e6', color = '#e6e9ef', size = 13,\n"
+        "   text { 'DEV PANEL   F4 closes', size = 15, color = '#ffd848' },\n"
+        "   text { '{state}', color = '#9be29b' }, text { '{track}' }, text { '{info}', color = '#aab4c8' },\n"
+        "   row { gap = 4, b('pause', 'Pause', 60), b('restart', 'Restart', 68), b('trackprev', '< Track', 68), b('tracknext', 'Track >', 68) },\n"
+        "   row { gap = 4, b('diff', 'Difficulty', 84), b('auto', 'Autopilot', 80), b('speed', 'Speed', 56), b('item', 'Item', 48) },\n"
+        "   row { gap = 4, b('bolts', '10 bolts', 72), b('reset', 'Reset tuning', 100), b('save', 'Save tuning', 96) },\n"
+        "   text { '{note}', color = '#ffd848' },\n");
+    static const struct { int at; const char* title; } heads[] = {{0, "HANDLING"}, {7, "DRIFT AND TURBO"}, {15, "RIVALS"}};
+    for (int i = 0; i < TUNE_FIELDS; ++i) {
+        for (const auto& h : heads) if (h.at == i) add("   head('%s'),\n", h.title);
+        add("   r(%d, ", i);
+        add("'%s'),\n", k_tune_fields[i].label);
+    }
+    put("  } } }\n");
+    g.dev_screen = krome_open_source(e, "sprocket.dev", src);
+    char id[16];
+    for (int i = 0; i < TUNE_FIELDS; ++i)
+        for (int q = 0; q < 4; ++q) { snprintf(id, sizeof id, "f%d%c", i, 'a' + q); g.dev_field[i][q] = name_intern(id).hash; }
+    for (int i = 0; i < DA_COUNT; ++i) g.dev_action[i] = name_intern(k_dev_actions[i]).hash;
+    g.dev_open = true;
+    dev_show_values(e, g);
+}
+#endif
 
 // ---- options ----------------------------------------------------------------------------------
 void store_settings(Game& g) {
@@ -624,7 +695,9 @@ void sprocket_tick(TickContext& ctx) {
     Renderer* r = renderer_get(*ctx.engine);
     Keys k{input, &g};
     ++g.tick;
-    if (g.tick % 30 == 0) reload_assets(g);
+#if defined(KV_DEV) && KV_DEV
+    if (g.tick % 30 == 0) reload_assets(g); // dev builds watch their asset files; a ship build loads them once
+#endif
     for (u32 i = 0; i < (u32)Key::Count; ++i) g.hit[i] = false;
     g.hit_pad = 0;
     for (u32 i = 0; i < KV_MAX_GAMEPADS; ++i) g.hit_pads[i] = 0;
@@ -664,6 +737,9 @@ void sprocket_tick(TickContext& ctx) {
         g.screen = sprites.spawn(transform2_at(point2{0, 0}), scr);
         records_load(g.rec, nullptr);
         // the settings from last time: picture options, bindings, and where the window goes
+#if defined(KV_DEV) && KV_DEV
+        if (tuning_load()) KV_INFO("sprocket", "tuning.txt read: the handling numbers differ from the built-in ones");
+#endif
         settings_default_binds(g.set);
         g.set.crt = g.crt; g.set.wide = g.wide;
         if (settings_load(g.set)) {
@@ -688,6 +764,74 @@ void sprocket_tick(TickContext& ctx) {
     }
     Allocator* a = g.fb.alloc;
 
+#if defined(KV_DEV) && KV_DEV
+    // ---- the developer's panel: F4 opens and closes it; its buttons arrive as events ----
+    {
+        Engine& e = *ctx.engine;
+        bool in_race = g.state == State::Racing || g.state == State::Paused;
+        if (k.pressed(Key::F4) && !g.ctl_capture) {
+            if (g.dev_open) { krome_close(e, g.dev_screen); g.dev_open = false; }
+            else dev_open_panel(e, g);
+        }
+        const char* note = nullptr;
+        for (const KromeEvent& ev : ctx.received<KromeEvent>()) {
+            if (!g.dev_open || ev.screen != g.dev_screen.hash) continue;
+            for (int i = 0; i < TUNE_FIELDS; ++i)
+                for (int q = 0; q < 4; ++q)
+                    if (ev.node == g.dev_field[i][q]) {
+                        static const f32 mult[4] = {-5.0f, -1.0f, 1.0f, 5.0f};
+                        const TuneField& tf = k_tune_fields[i];
+                        f32& v = g_tune.*tf.at;
+                        v = clampf(v + tf.step * mult[q], tf.lo, tf.hi);
+                        v = kv::floor(v / tf.step + 0.5f) * tf.step; // on the step's grid, so the text is clean
+                        dev_show_values(e, g);
+                    }
+            int act = -1;
+            for (int i = 0; i < DA_COUNT; ++i) if (ev.node == g.dev_action[i]) act = i;
+            Racer* me = in_race && g.race.player >= 0 ? &g.race.racers[g.race.player] : nullptr;
+            switch (act) {
+            case DA_PAUSE:
+                if (g.state == State::Racing) g.state = State::Paused; else if (g.state == State::Paused) g.state = State::Racing;
+                break;
+            case DA_RESTART: if (in_race && !g.tr.active) begin(g, State::Racing, Act::StartRace, Fx::Iris, 16); break;
+            case DA_TRACK_PREV:
+            case DA_TRACK_NEXT:
+                if (!g.tr.active) { // another track, as a single race, from anywhere
+                    g.sel_track = (g.sel_track + k_track_count + (act == DA_TRACK_NEXT ? 1 : -1)) % k_track_count;
+                    g.gp.active = false; g.time_trial = false;
+                    begin(g, State::Racing, Act::StartRace, Fx::Iris, 16);
+                }
+                break;
+            case DA_DIFF: g.sel_diff = (g.sel_diff + 1) % DIFFS; g.race.cpu_level = (f32)g.sel_diff; break;
+            case DA_AUTO: g.race.autopilot = !g.race.autopilot; break;
+            case DA_SPEED: g.dev_speed = g.dev_speed == 1.0f ? 0.5f : (g.dev_speed == 0.5f ? 0.25f : (g.dev_speed == 0.25f ? 2.0f : 1.0f)); break;
+            case DA_ITEM: if (me) { me->item = (u8)(me->item % (IT_COUNT - 1) + 1); me->item_uses = me->item == IT_NITRO3 ? 3 : 1; me->roulette = 0; } break;
+            case DA_BOLTS: if (me) me->bolts = 10; break;
+            case DA_RESET: g_tune = Tuning{}; dev_show_values(e, g); note = "tuning back to the built-in numbers (not saved)"; break;
+            case DA_SAVE: note = tuning_save() ? "tuning saved: it will be read at the next start" : "tuning could not be saved"; break;
+            default: break;
+            }
+        }
+        if (note) krome_set(e, g.dev_screen, "note", note);
+        if (g.dev_open && g.tick % 6 == 0) { // what the race is doing, as text
+            char buf[96];
+            static const char* const speeds[] = {"1/4 speed", "1/2 speed", "full speed", "double speed"};
+            const char* sp = g.dev_speed == 0.25f ? speeds[0] : (g.dev_speed == 0.5f ? speeds[1] : (g.dev_speed == 2.0f ? speeds[3] : speeds[2]));
+            snprintf(buf, sizeof buf, "%s   %s   %s%s", g.state == State::Paused ? "PAUSED" : (g.state == State::Racing ? "RACING" : "IN THE MENUS"), sp, k_diff_names[g.sel_diff],
+                     in_race && g.race.autopilot ? "   AUTOPILOT" : "");
+            krome_set(e, g.dev_screen, "state", buf);
+            if (in_race && g.race.player >= 0) {
+                const Racer& p = g.race.racers[g.race.player];
+                krome_set(e, g.dev_screen, "track", g.race.track.def->name);
+                snprintf(buf, sizeof buf, "speed %d   place %d   lap %d   drift %.1fs", (int)length(p.vel), p.place + 1, p.lap, (double)p.drift_charge);
+                krome_set(e, g.dev_screen, "info", buf);
+            } else { krome_set(e, g.dev_screen, "track", ""); krome_set(e, g.dev_screen, "info", "start a race to see its numbers"); }
+        }
+    }
+    const f32 race_dt = dt * g.dev_speed;
+#else
+    const f32 race_dt = dt;
+#endif
     // global keys
     // (a key that has been given a job in the controls loses its shortcut; none fire while a binding is being picked)
     auto free_key = [&](Key key) {
@@ -989,8 +1133,8 @@ void sprocket_tick(TickContext& ctx) {
         if (g.race.humans > 1) {
             Controls more[3];
             for (int hu = 1; hu < g.race.humans; ++hu) more[hu - 1] = race_controls(k, hu + 1, g.race.humans);
-            race_tick(g.race, race_controls(k, 1, g.race.humans), dt, more);
-        } else race_tick(g.race, race_controls(k, 0), dt);
+            race_tick(g.race, race_controls(k, 1, g.race.humans), race_dt, more);
+        } else race_tick(g.race, race_controls(k, 0), race_dt);
         bool done = g.race.phase == RacePhase::Done;
         if (done && !g.done_seen) { g.done_seen = true; race_finished(g); }
         bool results = done && g.race.done_timer >= 2.5f;
@@ -1228,8 +1372,9 @@ constinit const SystemDesc k_systems[] = {
     {   .name = ".tick",
         .phase = Phase::Sim,
         .fn = sprocket_tick,
-        .reads = "input.state, platform_hid.window, ExitRequested, KeyDown, PadButtonDown",
-        .writes = "sprite.entity"
+        .reads = "input.state, platform_hid.window, ExitRequested, KeyDown, PadButtonDown, KromeEvent",
+        .writes = "sprite.entity",
+        .main_thread = true, // it talks to the window, and in dev builds to Krome, whose state is the main thread's
     },
     {   .name = ".present",
         .phase = Phase::Frame,
