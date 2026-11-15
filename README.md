@@ -134,3 +134,21 @@ go blue, then orange, then purple; release for a mini-turbo (purple is the long 
   muted audio, and drive it with xdotool:
   `Xephyr :3 -screen 1300x1000 &` then
   `DISPLAY=:3 SDL_AUDIO_DRIVER=dummy VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json build/linux-dev/bin/sprocket`.
+
+## Licence
+
+Sprocket Rally is free software under the **GNU General Public License, version 3 or (at
+your option) any later version**; see `LICENSE`. That covers the game's source code, its
+generated art and its music as written in `src/snes_audio.cc`.
+
+GPL-3.0-or-later was chosen because the CRT shaders are ports of libretro shaders that are
+mostly "GPL version 2 or later", and the Korvid engine the game links against is Apache-2.0,
+which is compatible with version 3 but not version 2.
+
+Not everything in the repository is under that licence:
+
+- Each `sprocket/shaders/crt_*.slangh` keeps the licence stated at its head: most are GPL
+  v2-or-later, Hyllian's is MIT, and Lottes' two are public domain.
+- `crt_mattias.slangh` is a port of a shader published with no stated licence (Shadertoy's
+  default terms are CC BY-NC-SA 3.0). It remains under its author's terms, not the GPL.
+- The instrument sample data in `sprocket/src/audio_bank.h` is not covered by this licence.
