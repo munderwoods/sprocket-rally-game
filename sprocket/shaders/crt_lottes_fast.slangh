@@ -1,0 +1,272 @@
+// Port of libretro slang-shaders crt/shaders/crt-lottes-fast.slang (preset
+// crt/crt-lottes-fast.slangp: one pass, filter_linear0 = true, wrap_mode default =
+// clamp_to_border).
+//
+//_____________________________/\_______________________________
+//==============================================================
+//
+//
+//      [CRTS] PUBLIC DOMAIN CRT-STYLED SCALAR - 20180120b
+//
+//                      by Timothy Lottes
+//             https://www.shadertoy.com/view/MtSfRK
+//               adapted for RetroArch by hunterk
+//
+//
+//_____________________________/\_______________________________
+//==============================================================
+//
+//          LICENSE = UNLICENSE (aka PUBLIC DOMAIN)
+//
+//--------------------------------------------------------------
+// This is free and unencumbered software released into the 
+// public domain.
+//--------------------------------------------------------------
+// Anyone is free to copy, modify, publish, use, compile, sell, 
+// or distribute this software, either in source code form or as
+// a compiled binary, for any purpose, commercial or 
+// non-commercial, and by any means.
+//--------------------------------------------------------------
+// In jurisdictions that recognize copyright laws, the author or
+// authors of this software dedicate any and all copyright 
+// interest in the software to the public domain. We make this
+// dedication for the benefit of the public at large and to the
+// detriment of our heirs and successors. We intend this 
+// dedication to be an overt act of relinquishment in perpetuity
+// of all present and future rights to this software under 
+// copyright law.
+//--------------------------------------------------------------
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+// KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE 
+// WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR 
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE
+// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT 
+// OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+// DEALINGS IN THE SOFTWARE.
+//--------------------------------------------------------------
+// For more information, please refer to 
+// <http://unlicense.org/>
+//==============================================================
+////////////////////////////////////////////////////////////////
+//
+// Port notes: default #pragma parameters baked in (MASK 1 = aperture grille lite). Compile-time
+// setup as in the original: CRTS_GPU, CRTS_GLSL, CRTS_TONE, CRTS_WARP defined; CRTS_CONTRAST
+// and CRTS_SATURATION are "#define X 0" and tested with #ifdef, so both code paths ARE
+// compiled in (with tone.x = 1 and tone.w = 1); CRTS_2_TAP and CRTS_DEBUG undefined.
+// texture(Source, uv, -16.0): the -16 LOD bias is dropped (the game frame has no mips).
+// lottesfast_tex emulates libretro's default clamp_to_border sampler (black outside the
+// frame) since the engine sampler repeats; all fetches are at texel centers.
+#pragma once
+#include "crt_common.slangh"
+
+static const float lottesfast_MASK              = 1.0;
+static const float lottesfast_MASK_INTENSITY    = 0.5;
+static const float lottesfast_SCANLINE_THINNESS = 0.5;
+static const float lottesfast_SCAN_BLUR         = 2.5;
+static const float lottesfast_CURVATURE         = 0.02;
+static const float lottesfast_TRINITRON_CURVE   = 0.0;
+static const float lottesfast_CORNER            = 3.0;
+static const float lottesfast_CRT_GAMMA         = 2.4;
+
+// INPUT_THIN / INPUT_BLUR / INPUT_MASK
+static const float lottesfast_INPUT_THIN = (0.5 + (0.5 * lottesfast_SCANLINE_THINNESS));
+static const float lottesfast_INPUT_BLUR = (-1.0 * lottesfast_SCAN_BLUR);
+static const float lottesfast_INPUT_MASK = (1.0 - lottesfast_MASK_INTENSITY);
+
+// texture(Source, uv) with linear filtering and a black border outside [0,1).
+vec4 lottesfast_tex(vec2 uv)
+{
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return vec4(0.0, 0.0, 0.0, 0.0);
+    return crt_tex(uv);
+}
+
+float lottesfast_FromSrgb1(float c)
+{
+    return (c <= 0.04045) ? c * (1.0 / 12.92) :
+        pow(abs(c) * (1.0 / 1.055) + (0.055 / 1.055), lottesfast_CRT_GAMMA);
+}
+vec3 lottesfast_FromSrgb(vec3 c)
+{
+    return vec3(lottesfast_FromSrgb1(c.r), lottesfast_FromSrgb1(c.g), lottesfast_FromSrgb1(c.b));
+}
+
+float lottesfast_ToSrgb1(float c)
+{
+    return (c < 0.0031308 ? c * 12.92 : 1.055 * pow(c, 0.41666) - 0.055);
+}
+vec3 lottesfast_ToSrgb(vec3 c)
+{
+    return vec3(lottesfast_ToSrgb1(c.r), lottesfast_ToSrgb1(c.g), lottesfast_ToSrgb1(c.b));
+}
+
+// CrtsFetch (INPUT_X/INPUT_Y == SourceSize.xy, so the uv scale is 1)
+vec3 lottesfast_CrtsFetch(CrtIn c, vec2 uv)
+{
+    uv *= vec2(c.SourceSize.x, c.SourceSize.y) / c.SourceSize.xy;
+    return lottesfast_FromSrgb(lottesfast_tex(uv.xy).rgb);
+}
+
+float lottesfast_CrtsMax3F1(float a, float b, float c)
+{
+    return max(a, max(b, c));
+}
+
+vec4 lottesfast_CrtsTone(float contrast, float saturation, float thin, float mask)
+{
+    if (lottesfast_MASK == 0.0) mask = 1.0;
+    if (lottesfast_MASK == 1.0) {
+        // Normal R mask is {1.0,mask,mask}
+        // LITE   R mask is {mask,1.0,1.0}
+        mask = 0.5 + mask * 0.5;
+    }
+    vec4 ret;
+    float midOut = 0.18 / ((1.5 - thin) * (0.5 * mask + 0.5));
+    float pMidIn = pow(0.18, contrast);
+    ret.x = contrast;
+    ret.y = ((-pMidIn) + midOut) / ((1.0 - pMidIn) * midOut);
+    ret.z = ((-pMidIn) * midOut + pMidIn) / (midOut * (-pMidIn) + midOut);
+    ret.w = contrast + saturation;
+    return ret;
+}
+
+vec3 lottesfast_CrtsMask(vec2 pos, float dark)
+{
+    if (lottesfast_MASK == 2.0) {
+        vec3 m = vec3(dark, dark, dark);
+        float x = fract(pos.x * (1.0 / 3.0));
+        if (x < (1.0 / 3.0)) m.r = 1.0;
+        else if (x < (2.0 / 3.0)) m.g = 1.0;
+        else m.b = 1.0;
+        return m;
+    }
+    else if (lottesfast_MASK == 1.0) {
+        vec3 m = vec3(1.0, 1.0, 1.0);
+        float x = fract(pos.x * (1.0 / 3.0));
+        if (x < (1.0 / 3.0)) m.r = dark;
+        else if (x < (2.0 / 3.0)) m.g = dark;
+        else m.b = dark;
+        return m;
+    }
+    else if (lottesfast_MASK == 3.0) {
+        pos.x += pos.y * 2.9999;
+        vec3 m = vec3(dark, dark, dark);
+        float x = fract(pos.x * (1.0 / 6.0));
+        if (x < (1.0 / 3.0)) m.r = 1.0;
+        else if (x < (2.0 / 3.0)) m.g = 1.0;
+        else m.b = 1.0;
+        return m;
+    }
+    else {
+        return vec3(1.0, 1.0, 1.0);
+    }
+}
+
+vec3 lottesfast_CrtsFilter(CrtIn c,
+    vec2 ipos,
+    vec2 inputSizeDivOutputSize,
+    vec2 halfInputSize,
+    vec2 rcpInputSize,
+    vec2 rcpOutputSize,
+    vec2 twoDivOutputSize,
+    float inputHeight,
+    vec2 warp,
+    float thin,
+    float blur,
+    float mask,
+    vec4 tone)
+{
+    // CRTS_WARP
+    vec2 pos;
+    pos = ipos * twoDivOutputSize - vec2(1.0, 1.0);
+    pos *= vec2(
+        1.0 + (pos.y * pos.y) * warp.x,
+        1.0 + (pos.x * pos.x) * warp.y);
+    float vin = (1.0 - (
+        (1.0 - clamp(pos.x * pos.x, 0.0, 1.0)) * (1.0 - clamp(pos.y * pos.y, 0.0, 1.0)))) * (0.998 + (0.001 * lottesfast_CORNER));
+    vin = clamp((-vin) * inputHeight + inputHeight, 0.0, 1.0);
+    pos = pos * halfInputSize + halfInputSize;
+
+    // Snap to center of first scanline
+    float y0 = floor(pos.y - 0.5) + 0.5;
+    // 8-tap path (CRTS_2_TAP undefined)
+    float x0 = floor(pos.x - 1.5) + 0.5;
+    vec2 p = vec2(x0 * rcpInputSize.x, y0 * rcpInputSize.y);
+    vec3 colA0 = lottesfast_CrtsFetch(c, p);
+    p.x += rcpInputSize.x;
+    vec3 colA1 = lottesfast_CrtsFetch(c, p);
+    p.x += rcpInputSize.x;
+    vec3 colA2 = lottesfast_CrtsFetch(c, p);
+    p.x += rcpInputSize.x;
+    vec3 colA3 = lottesfast_CrtsFetch(c, p);
+    p.y += rcpInputSize.y;
+    vec3 colB3 = lottesfast_CrtsFetch(c, p);
+    p.x -= rcpInputSize.x;
+    vec3 colB2 = lottesfast_CrtsFetch(c, p);
+    p.x -= rcpInputSize.x;
+    vec3 colB1 = lottesfast_CrtsFetch(c, p);
+    p.x -= rcpInputSize.x;
+    vec3 colB0 = lottesfast_CrtsFetch(c, p);
+
+    // Vertical filter
+    float off = pos.y - y0;
+    float pi2 = 6.28318530717958;
+    float hlf = 0.5;
+    float scanA = cos(min(0.5,  off * thin) * pi2) * hlf + hlf;
+    float scanB = cos(min(0.5, (-off) * thin + thin) * pi2) * hlf + hlf;
+
+    // Horizontal kernel is simple gaussian filter
+    float off0 = pos.x - x0;
+    float off1 = off0 - 1.0;
+    float off2 = off0 - 2.0;
+    float off3 = off0 - 3.0;
+    float pix0 = exp2(blur * off0 * off0);
+    float pix1 = exp2(blur * off1 * off1);
+    float pix2 = exp2(blur * off2 * off2);
+    float pix3 = exp2(blur * off3 * off3);
+    float pixT = (1.0 / (pix0 + pix1 + pix2 + pix3));
+    // CRTS_WARP: get rid of wrong pixels on edge
+    pixT *= vin;
+    scanA *= pixT;
+    scanB *= pixT;
+    vec3 color =
+        (colA0 * pix0 + colA1 * pix1 + colA2 * pix2 + colA3 * pix3) * scanA +
+        (colB0 * pix0 + colB1 * pix1 + colB2 * pix2 + colB3 * pix3) * scanB;
+
+    // Apply phosphor mask
+    color *= lottesfast_CrtsMask(ipos, mask);
+
+    // CRTS_TONE
+    float peak = max(1.0 / (256.0 * 65536.0),
+        lottesfast_CrtsMax3F1(color.r, color.g, color.b));
+    vec3 ratio = color * (1.0 / (peak));
+    // CRTS_CONTRAST (defined)
+    peak = pow(peak, tone.x);
+    peak = peak * (1.0 / (peak * tone.y + tone.z));
+    // CRTS_SATURATION (defined)
+    ratio = pow(ratio, vec3(tone.w, tone.w, tone.w));
+    return ratio * peak;
+}
+
+vec3 crt_lottes_fast(CrtIn c)
+{
+    vec2 warp_factor;
+    warp_factor.x = lottesfast_CURVATURE;
+    warp_factor.y = (3.0 / 4.0) * warp_factor.x; // assume 4:3 aspect
+    warp_factor.x *= (1.0 - lottesfast_TRINITRON_CURVE);
+    vec3 col = lottesfast_CrtsFilter(c, c.uv.xy * c.OutputSize.xy,
+        c.SourceSize.xy * c.OutputSize.zw,
+        c.SourceSize.xy * vec2(0.5, 0.5),
+        c.SourceSize.zw,
+        c.OutputSize.zw,
+        2.0 * c.OutputSize.zw,
+        c.SourceSize.y,
+        warp_factor,
+        lottesfast_INPUT_THIN,
+        lottesfast_INPUT_BLUR,
+        lottesfast_INPUT_MASK,
+        lottesfast_CrtsTone(1.0, 0.0, lottesfast_INPUT_THIN, lottesfast_INPUT_MASK));
+
+    // Shadertoy outputs non-linear color
+    return lottesfast_ToSrgb(col);
+}

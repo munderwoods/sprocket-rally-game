@@ -1,0 +1,20 @@
+// Shared interface for the ported libretro CRT shaders (see sprocket_crt.slang).
+//
+// Each port lives in crt_<name>.slangh and defines one entry function
+//     vec3 crt_<name>(CrtIn c)
+// returning the color exactly as the original shader would write it (gamma-encoded, as
+// libretro presents it). Helpers and constants in a port are prefixed with its name.
+#pragma once
+
+struct CrtIn {
+    vec2 uv;           // vTexCoord: 0..1 across the game frame, (0,0) top-left
+    vec4 SourceSize;   // w, h, 1/w, 1/h of the game frame (== OriginalSize: one pass)
+    vec4 OutputSize;   // w, h, 1/w, 1/h of the frame on screen, in pixels
+    vec4 OriginalSize; // same as SourceSize
+    uint FrameCount;
+    vec2 fragCoord;    // gl_FragCoord.xy: window pixels of this fragment
+};
+
+// The game frame, gamma-encoded (an UNORM texture: what libretro shaders expect).
+vec4 crt_tex(vec2 uv);          // bilinear, like filter_linear = true
+vec4 crt_tex_nearest(vec2 uv);  // point sampling, like filter_linear = false

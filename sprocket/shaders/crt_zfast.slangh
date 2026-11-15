@@ -1,0 +1,63 @@
+// Port of libretro slang-shaders crt/shaders/zfast_crt/zfast_crt_finemask.slang (which
+// defines FINEMASK and includes zfast_crt_impl.inc), the shader of the main preset
+// crt/zfast-crt.slangp (one pass, filter_linear0 = true, so the frame is sampled
+// bilinearly), default parameters. BLACK_OUT_BORDER is not defined in the original.
+//
+// Original header (zfast_crt_impl.inc):
+/*
+    zfast_crt_standard - A simple, fast CRT shader.
+
+    Copyright (C) 2017 Greg Hogan (SoltanGris42)
+
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the Free
+    Software Foundation; either version 2 of the License, or (at your option)
+    any later version.
+
+
+Notes:  This shader does scaling with a weighted linear filter for adjustable
+	sharpness on the x and y axes based on the algorithm by Inigo Quilez here:
+	http://http://www.iquilezles.org/www/articles/texture/texture.htm
+	but modified to be somewhat sharper.  Then a scanline effect that varies
+	based on pixel brighness is applied along with a monochrome aperture mask.
+	This shader runs at 60fps on the Raspberry Pi 3 hardware at 2mpix/s
+	resolutions (1920x1080 or 1600x1200).
+*/
+#pragma once
+#include "crt_common.slangh"
+
+// #pragma parameter defaults.
+static const float zfast_BLURSCALEX  = 0.30;
+static const float zfast_LOWLUMSCAN  = 6.0;
+static const float zfast_HILUMSCAN   = 8.0;
+static const float zfast_BRIGHTBOOST = 1.25;
+static const float zfast_MASK_DARK   = 0.25;
+static const float zfast_MASK_FADE   = 0.8;
+
+vec3 crt_zfast(CrtIn c)
+{
+    // Vertex shader.
+    vec2 vTexCoord = c.uv;
+    float maskFade = 0.3333*zfast_MASK_FADE;
+    vec2 invDims = 1.0/c.SourceSize.xy;
+
+    //This is just like "Quilez Scaling" but sharper
+    vec2 p = vTexCoord * c.SourceSize.xy;
+    vec2 i = floor(p) + 0.50;
+    vec2 f = p - i;
+    p = (i + 4.0*f*f*f)*invDims;
+    p.x = mix( p.x , vTexCoord.x, zfast_BLURSCALEX);
+    float Y = f.y*f.y;
+    float YY = Y*Y;
+
+    // FINEMASK
+    float whichmask = fract(floor(vTexCoord.x*c.OutputSize.x)*-0.4999);
+    float mask = 1.0 + float(whichmask < 0.5) * -zfast_MASK_DARK;
+
+    vec3 colour = crt_tex(p).rgb;
+
+    float scanLineWeight = (zfast_BRIGHTBOOST - zfast_LOWLUMSCAN*(Y - 2.05*YY));
+    float scanLineWeightB = 1.0 - zfast_HILUMSCAN*(YY-2.8*YY*Y);
+
+    return colour.rgb*mix(scanLineWeight*mask, scanLineWeightB, dot(colour.rgb,vec3(maskFade)));
+}

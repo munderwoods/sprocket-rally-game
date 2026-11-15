@@ -1,0 +1,8 @@
+build/
+dist/
+__pycache__/
+sprocket/tools/headless/headless
+sprocket/tools/headless/ui_shots
+sprocket/tools/headless/bgshot
+sprocket/tools/sprocket.res
+sprocket/tools/audio_sources.local.json

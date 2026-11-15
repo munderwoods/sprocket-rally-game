@@ -1,0 +1,289 @@
+// Port of libretro slang-shaders crt/shaders/crt-lottes.slang (preset crt/crt-lottes.slangp:
+// one pass, filter_linear0 = false, wrap_mode default = clamp_to_border).
+//
+// PUBLIC DOMAIN CRT STYLED SCAN-LINE SHADER
+//
+//   by Timothy Lottes
+//
+// This is more along the style of a really good CGA arcade monitor.
+// With RGB inputs instead of NTSC.
+// The shadow mask example has the mask rotated 90 degrees for less chromatic aberration.
+//
+// Left it unoptimized to show the theory behind the algorithm.
+//
+// It is an example what I personally would want as a display option for pixel art games.
+// Please take and use, change, or whatever.
+//
+// Port notes: default #pragma parameters baked in; shadowMask is a function argument so two
+// entries share the code: crt_lottes_aperture (shadowMask 2 = aperture grille) and
+// crt_lottes_slot (shadowMask 3 = the original default, "stretched VGA style shadow mask").
+// SIMPLE_LINEAR_GAMMA is off and DO_BLOOM on, as in the original; the GL_ES-only border hack
+// is not compiled in Vulkan and is omitted. lottes_tex emulates libretro's default
+// clamp_to_border sampler (black outside the frame) since the engine sampler repeats.
+#pragma once
+#include "crt_common.slangh"
+
+static const float lottes_hardScan           = -8.0;
+static const float lottes_hardPix            = -3.0;
+static const float lottes_warpX              = 0.031;
+static const float lottes_warpY              = 0.041;
+static const float lottes_maskDark           = 0.5;
+static const float lottes_maskLight          = 1.5;
+static const float lottes_scaleInLinearGamma = 1.0;
+static const float lottes_brightBoost        = 1.0;
+static const float lottes_hardBloomPix       = -1.5;
+static const float lottes_hardBloomScan      = -2.0;
+static const float lottes_bloomAmount        = 0.15;
+static const float lottes_shape              = 2.0;
+
+// texture(Source, uv) with nearest filtering and a black border outside [0,1).
+vec3 lottes_tex(vec2 uv)
+{
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return vec3(0.0, 0.0, 0.0);
+    return crt_tex_nearest(uv).rgb;
+}
+
+float lottes_ToLinear1(float c)
+{
+    if (lottes_scaleInLinearGamma == 0.0)
+        return c;
+
+    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+vec3 lottes_ToLinear(vec3 c)
+{
+    if (lottes_scaleInLinearGamma == 0.0)
+        return c;
+
+    return vec3(lottes_ToLinear1(c.r), lottes_ToLinear1(c.g), lottes_ToLinear1(c.b));
+}
+
+float lottes_ToSrgb1(float c)
+{
+    if (lottes_scaleInLinearGamma == 0.0)
+        return c;
+
+    return (c < 0.0031308 ? c * 12.92 : 1.055 * pow(c, 0.41666) - 0.055);
+}
+
+vec3 lottes_ToSrgb(vec3 c)
+{
+    if (lottes_scaleInLinearGamma == 0.0)
+        return c;
+
+    return vec3(lottes_ToSrgb1(c.r), lottes_ToSrgb1(c.g), lottes_ToSrgb1(c.b));
+}
+
+// Nearest emulated sample given floating point position and texel offset.
+vec3 lottes_Fetch(CrtIn c, vec2 pos, vec2 off)
+{
+    pos = (floor(pos * c.SourceSize.xy + off) + vec2(0.5, 0.5)) / c.SourceSize.xy;
+    return lottes_ToLinear(lottes_brightBoost * lottes_tex(pos.xy));
+}
+
+// Distance in emulated pixels to nearest texel.
+vec2 lottes_Dist(CrtIn c, vec2 pos)
+{
+    pos = pos * c.SourceSize.xy;
+
+    return -((pos - floor(pos)) - vec2(0.5, 0.5));
+}
+
+// 1D Gaussian.
+float lottes_Gaus(float pos, float scale)
+{
+    return exp2(scale * pow(abs(pos), lottes_shape));
+}
+
+// 3-tap Gaussian filter along horz line.
+vec3 lottes_Horz3(CrtIn c, vec2 pos, float off)
+{
+    vec3 b    = lottes_Fetch(c, pos, vec2(-1.0, off));
+    vec3 cc   = lottes_Fetch(c, pos, vec2( 0.0, off));
+    vec3 d    = lottes_Fetch(c, pos, vec2( 1.0, off));
+    float dst = lottes_Dist(c, pos).x;
+
+    float scale = lottes_hardPix;
+    float wb = lottes_Gaus(dst - 1.0, scale);
+    float wc = lottes_Gaus(dst + 0.0, scale);
+    float wd = lottes_Gaus(dst + 1.0, scale);
+
+    return (b * wb + cc * wc + d * wd) / (wb + wc + wd);
+}
+
+// 5-tap Gaussian filter along horz line.
+vec3 lottes_Horz5(CrtIn c, vec2 pos, float off)
+{
+    vec3 a  = lottes_Fetch(c, pos, vec2(-2.0, off));
+    vec3 b  = lottes_Fetch(c, pos, vec2(-1.0, off));
+    vec3 cc = lottes_Fetch(c, pos, vec2( 0.0, off));
+    vec3 d  = lottes_Fetch(c, pos, vec2( 1.0, off));
+    vec3 e  = lottes_Fetch(c, pos, vec2( 2.0, off));
+
+    float dst = lottes_Dist(c, pos).x;
+    float scale = lottes_hardPix;
+    float wa = lottes_Gaus(dst - 2.0, scale);
+    float wb = lottes_Gaus(dst - 1.0, scale);
+    float wc = lottes_Gaus(dst + 0.0, scale);
+    float wd = lottes_Gaus(dst + 1.0, scale);
+    float we = lottes_Gaus(dst + 2.0, scale);
+
+    return (a * wa + b * wb + cc * wc + d * wd + e * we) / (wa + wb + wc + wd + we);
+}
+
+// 7-tap Gaussian filter along horz line.
+vec3 lottes_Horz7(CrtIn c, vec2 pos, float off)
+{
+    vec3 a  = lottes_Fetch(c, pos, vec2(-3.0, off));
+    vec3 b  = lottes_Fetch(c, pos, vec2(-2.0, off));
+    vec3 cc = lottes_Fetch(c, pos, vec2(-1.0, off));
+    vec3 d  = lottes_Fetch(c, pos, vec2( 0.0, off));
+    vec3 e  = lottes_Fetch(c, pos, vec2( 1.0, off));
+    vec3 f  = lottes_Fetch(c, pos, vec2( 2.0, off));
+    vec3 g  = lottes_Fetch(c, pos, vec2( 3.0, off));
+
+    float dst = lottes_Dist(c, pos).x;
+    float scale = lottes_hardBloomPix;
+    float wa = lottes_Gaus(dst - 3.0, scale);
+    float wb = lottes_Gaus(dst - 2.0, scale);
+    float wc = lottes_Gaus(dst - 1.0, scale);
+    float wd = lottes_Gaus(dst + 0.0, scale);
+    float we = lottes_Gaus(dst + 1.0, scale);
+    float wf = lottes_Gaus(dst + 2.0, scale);
+    float wg = lottes_Gaus(dst + 3.0, scale);
+
+    return (a * wa + b * wb + cc * wc + d * wd + e * we + f * wf + g * wg) / (wa + wb + wc + wd + we + wf + wg);
+}
+
+// Return scanline weight.
+float lottes_Scan(CrtIn c, vec2 pos, float off)
+{
+    float dst = lottes_Dist(c, pos).y;
+
+    return lottes_Gaus(dst + off, lottes_hardScan);
+}
+
+// Return scanline weight for bloom.
+float lottes_BloomScan(CrtIn c, vec2 pos, float off)
+{
+    float dst = lottes_Dist(c, pos).y;
+
+    return lottes_Gaus(dst + off, lottes_hardBloomScan);
+}
+
+// Allow nearest three lines to effect pixel.
+vec3 lottes_Tri(CrtIn c, vec2 pos)
+{
+    vec3 a  = lottes_Horz3(c, pos, -1.0);
+    vec3 b  = lottes_Horz5(c, pos,  0.0);
+    vec3 cc = lottes_Horz3(c, pos,  1.0);
+
+    float wa = lottes_Scan(c, pos, -1.0);
+    float wb = lottes_Scan(c, pos,  0.0);
+    float wc = lottes_Scan(c, pos,  1.0);
+
+    return a * wa + b * wb + cc * wc;
+}
+
+// Small bloom.
+vec3 lottes_Bloom(CrtIn c, vec2 pos)
+{
+    vec3 a  = lottes_Horz5(c, pos, -2.0);
+    vec3 b  = lottes_Horz7(c, pos, -1.0);
+    vec3 cc = lottes_Horz7(c, pos,  0.0);
+    vec3 d  = lottes_Horz7(c, pos,  1.0);
+    vec3 e  = lottes_Horz5(c, pos,  2.0);
+
+    float wa = lottes_BloomScan(c, pos, -2.0);
+    float wb = lottes_BloomScan(c, pos, -1.0);
+    float wc = lottes_BloomScan(c, pos,  0.0);
+    float wd = lottes_BloomScan(c, pos,  1.0);
+    float we = lottes_BloomScan(c, pos,  2.0);
+
+    return a * wa + b * wb + cc * wc + d * wd + e * we;
+}
+
+// Distortion of scanlines, and end of screen alpha.
+vec2 lottes_Warp(vec2 pos)
+{
+    pos  = pos * 2.0 - 1.0;
+    pos *= vec2(1.0 + (pos.y * pos.y) * lottes_warpX, 1.0 + (pos.x * pos.x) * lottes_warpY);
+
+    return pos * 0.5 + 0.5;
+}
+
+// Shadow mask.
+vec3 lottes_Mask(vec2 pos, float shadowMask)
+{
+    vec3 mask = vec3(lottes_maskDark, lottes_maskDark, lottes_maskDark);
+
+    // Very compressed TV style shadow mask.
+    if (shadowMask == 1.0)
+    {
+        float line = lottes_maskLight;
+        float odd = 0.0;
+
+        if (fract(pos.x * 0.166666666) < 0.5) odd = 1.0;
+        if (fract((pos.y + odd) * 0.5) < 0.5) line = lottes_maskDark;
+
+        pos.x = fract(pos.x * 0.333333333);
+
+        if      (pos.x < 0.333) mask.r = lottes_maskLight;
+        else if (pos.x < 0.666) mask.g = lottes_maskLight;
+        else                    mask.b = lottes_maskLight;
+        mask *= line;
+    }
+
+    // Aperture-grille.
+    else if (shadowMask == 2.0)
+    {
+        pos.x = fract(pos.x * 0.333333333);
+
+        if      (pos.x < 0.333) mask.r = lottes_maskLight;
+        else if (pos.x < 0.666) mask.g = lottes_maskLight;
+        else                    mask.b = lottes_maskLight;
+    }
+
+    // Stretched VGA style shadow mask (same as prior shaders).
+    else if (shadowMask == 3.0)
+    {
+        pos.x += pos.y * 3.0;
+        pos.x  = fract(pos.x * 0.166666666);
+
+        if      (pos.x < 0.333) mask.r = lottes_maskLight;
+        else if (pos.x < 0.666) mask.g = lottes_maskLight;
+        else                    mask.b = lottes_maskLight;
+    }
+
+    // VGA style shadow mask.
+    else if (shadowMask == 4.0)
+    {
+        pos.xy  = floor(pos.xy * vec2(1.0, 0.5));
+        pos.x  += pos.y * 3.0;
+        pos.x   = fract(pos.x * 0.166666666);
+
+        if      (pos.x < 0.333) mask.r = lottes_maskLight;
+        else if (pos.x < 0.666) mask.g = lottes_maskLight;
+        else                    mask.b = lottes_maskLight;
+    }
+
+    return mask;
+}
+
+vec3 lottes_main(CrtIn c, float shadowMask)
+{
+    vec2 pos = lottes_Warp(c.uv);
+    vec3 outColor = lottes_Tri(c, pos);
+
+    // Add Bloom (DO_BLOOM)
+    outColor.rgb += lottes_Bloom(c, pos) * lottes_bloomAmount;
+
+    if (shadowMask > 0.0)
+        outColor.rgb *= lottes_Mask(c.uv.xy / c.OutputSize.zw * 1.000001, shadowMask);
+
+    return lottes_ToSrgb(outColor.rgb);
+}
+
+vec3 crt_lottes_aperture(CrtIn c) { return lottes_main(c, 2.0); }
+vec3 crt_lottes_slot(CrtIn c)     { return lottes_main(c, 3.0); }

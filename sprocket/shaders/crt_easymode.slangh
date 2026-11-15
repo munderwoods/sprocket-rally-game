@@ -1,0 +1,159 @@
+// Port of libretro slang-shaders crt/shaders/crt-easymode.slang (preset crt/crt-easymode.slangp:
+// one pass, filter_linear0 = false, wrap_mode default = clamp_to_border).
+//
+/*
+    CRT Shader by EasyMode
+    License: GPL
+
+    A flat CRT shader ideally for 1080p or higher displays.
+
+    Recommended Settings:
+
+    Video
+    - Aspect Ratio:  4:3
+    - Integer Scale: Off
+
+    Shader
+    - Filter: Nearest
+    - Scale:  Don't Care
+
+    Example RGB Mask Parameter Settings:
+
+    Aperture Grille (Default)
+    - Dot Width:  1
+    - Dot Height: 1
+    - Stagger:    0
+
+    Lottes' Shadow Mask
+    - Dot Width:  2
+    - Dot Height: 1
+    - Stagger:    3
+*/
+//
+// Port notes: default #pragma parameters baked in; ENABLE_LANCZOS = 1 path as in the original.
+// The GLSL mat4x4 helpers are expanded into explicit column sums (GLSL column-major:
+// m * v = m[0]*v.x + m[1]*v.y + m[2]*v.z + m[3]*v.w, m[i] = i-th constructor argument).
+// GLSL mod() is reproduced as x - y*floor(x/y). easymode_tex emulates libretro's default
+// clamp_to_border sampler (black outside the frame) since the engine sampler repeats.
+#pragma once
+#include "crt_common.slangh"
+
+static const float easymode_SHARPNESS_H             = 0.5;
+static const float easymode_SHARPNESS_V             = 1.0;
+static const float easymode_MASK_STRENGTH           = 0.3;
+static const float easymode_MASK_DOT_WIDTH          = 1.0;
+static const float easymode_MASK_DOT_HEIGHT         = 1.0;
+static const float easymode_MASK_STAGGER            = 0.0;
+static const float easymode_MASK_SIZE               = 1.0;
+static const float easymode_SCANLINE_STRENGTH       = 1.0;
+static const float easymode_SCANLINE_BEAM_WIDTH_MIN = 1.5;
+static const float easymode_SCANLINE_BEAM_WIDTH_MAX = 1.5;
+static const float easymode_SCANLINE_BRIGHT_MIN     = 0.35;
+static const float easymode_SCANLINE_BRIGHT_MAX     = 0.65;
+static const float easymode_SCANLINE_CUTOFF         = 400.0;
+static const float easymode_GAMMA_INPUT             = 2.0;
+static const float easymode_GAMMA_OUTPUT            = 1.8;
+static const float easymode_BRIGHT_BOOST            = 1.2;
+static const float easymode_DILATION                = 1.0;
+
+static const float easymode_PI = 3.141592653589;
+
+float easymode_mod(float x, float y) { return x - y * floor(x / y); }
+
+// FIX(c)
+vec4 easymode_FIX(vec4 c) { return max(abs(c), vec4(1e-5, 1e-5, 1e-5, 1e-5)); }
+
+// texture(Source, uv) with nearest filtering and a black border outside [0,1).
+vec4 easymode_tex(vec2 uv)
+{
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return vec4(0.0, 0.0, 0.0, 0.0);
+    return crt_tex_nearest(uv);
+}
+
+vec4 easymode_dilate(vec4 col)
+{
+    vec4 x = mix(vec4(1.0, 1.0, 1.0, 1.0), col, easymode_DILATION);
+
+    return col * x;
+}
+
+// TEX2D(c)
+vec4 easymode_TEX2D(vec2 co) { return easymode_dilate(easymode_tex(co)); }
+
+float easymode_curve_distance(float x, float sharp)
+{
+    float x_step = step(0.5, x);
+    float curve = 0.5 - sqrt(0.25 - (x - x_step) * (x - x_step)) * sign(0.5 - x);
+
+    return mix(x, curve, sharp);
+}
+
+// filter_lanczos(coeffs, get_color_matrix(co, dx))
+vec3 easymode_filter_lanczos(vec4 coeffs, vec2 co, vec2 dx)
+{
+    vec4 m0 = easymode_TEX2D(co - dx);
+    vec4 m1 = easymode_TEX2D(co);
+    vec4 m2 = easymode_TEX2D(co + dx);
+    vec4 m3 = easymode_TEX2D(co + 2.0 * dx);
+
+    vec4 col        = m0 * coeffs.x + m1 * coeffs.y + m2 * coeffs.z + m3 * coeffs.w;
+    vec4 sample_min = min(m1, m2);
+    vec4 sample_max = max(m1, m2);
+
+    col = clamp(col, sample_min, sample_max);
+
+    return col.rgb;
+}
+
+vec3 crt_easymode(CrtIn c)
+{
+    vec2 dx     = vec2(c.SourceSize.z, 0.0);
+    vec2 dy     = vec2(0.0, c.SourceSize.w);
+    vec2 pix_co = c.uv * c.SourceSize.xy - vec2(0.5, 0.5);
+    vec2 tex_co = (floor(pix_co) + vec2(0.5, 0.5)) * c.SourceSize.zw;
+    vec2 dist   = fract(pix_co);
+    float curve_x;
+    vec3 col, col2;
+
+    curve_x = easymode_curve_distance(dist.x, easymode_SHARPNESS_H * easymode_SHARPNESS_H);
+
+    vec4 coeffs = easymode_PI * vec4(1.0 + curve_x, curve_x, 1.0 - curve_x, 2.0 - curve_x);
+
+    coeffs = easymode_FIX(coeffs);
+    coeffs = 2.0 * sin(coeffs) * sin(coeffs * 0.5) / (coeffs * coeffs);
+    coeffs /= dot(coeffs, vec4(1.0, 1.0, 1.0, 1.0));
+
+    col  = easymode_filter_lanczos(coeffs, tex_co, dx);
+    col2 = easymode_filter_lanczos(coeffs, tex_co + dy, dx);
+
+    col = mix(col, col2, easymode_curve_distance(dist.y, easymode_SHARPNESS_V));
+    float gi = easymode_GAMMA_INPUT / (easymode_DILATION + 1.0);
+    col = pow(col, vec3(gi, gi, gi));
+
+    float luma        = dot(vec3(0.2126, 0.7152, 0.0722), col);
+    float bright      = (max(col.r, max(col.g, col.b)) + luma) * 0.5;
+    float scan_bright = clamp(bright, easymode_SCANLINE_BRIGHT_MIN, easymode_SCANLINE_BRIGHT_MAX);
+    float scan_beam   = clamp(bright * easymode_SCANLINE_BEAM_WIDTH_MAX, easymode_SCANLINE_BEAM_WIDTH_MIN, easymode_SCANLINE_BEAM_WIDTH_MAX);
+    float scan_weight = 1.0 - pow(cos(c.uv.y * 2.0 * easymode_PI * c.SourceSize.y) * 0.5 + 0.5, scan_beam) * easymode_SCANLINE_STRENGTH;
+
+    float mask   = 1.0 - easymode_MASK_STRENGTH;
+    vec2 mod_fac = floor(c.uv * c.OutputSize.xy * c.SourceSize.xy / (c.SourceSize.xy * vec2(easymode_MASK_SIZE, easymode_MASK_DOT_HEIGHT * easymode_MASK_SIZE)));
+    int dot_no   = int(easymode_mod((mod_fac.x + easymode_mod(mod_fac.y, 2.0) * easymode_MASK_STAGGER) / easymode_MASK_DOT_WIDTH, 3.0));
+    vec3 mask_weight;
+
+    if      (dot_no == 0) mask_weight = vec3(1.0,  mask, mask);
+    else if (dot_no == 1) mask_weight = vec3(mask, 1.0,  mask);
+    else                  mask_weight = vec3(mask, mask, 1.0);
+
+    if (c.SourceSize.y >= easymode_SCANLINE_CUTOFF)
+        scan_weight = 1.0;
+
+    col2 = col.rgb;
+    col *= vec3(scan_weight, scan_weight, scan_weight);
+    col  = mix(col, col2, scan_bright);
+    col *= mask_weight;
+    float go = 1.0 / easymode_GAMMA_OUTPUT;
+    col  = pow(col, vec3(go, go, go));
+
+    return col * easymode_BRIGHT_BOOST;
+}

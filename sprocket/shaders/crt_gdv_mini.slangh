@@ -1,0 +1,291 @@
+// Port of libretro slang-shaders crt/shaders/crt-gdv-mini.slang (preset crt/crt-gdv-mini.slangp,
+// one pass, no filter_linear set -> point sampling; it only reads texel centres anyway).
+// Original header:
+/*
+   CRT - Guest - Nomask w. Curvature
+   With work by DariusG to create a cut down extra fast version
+
+   Copyright (C) 2017-2018 guest(r) - guest.r@gmail.com
+
+   This program is free software; you can redistribute it and/or
+   modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2
+   of the License, or (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+#pragma once
+#include "crt_common.slangh"
+
+// #pragma parameter defaults
+static const float gdv_brightboost = 1.0;
+static const float gdv_sat         = 1.0;
+static const float gdv_scanline    = 8.0;
+static const float gdv_beam_min    = 1.35;
+static const float gdv_beam_max    = 1.05;
+static const float gdv_h_sharp     = 2.0;
+static const float gdv_gamma_out   = 0.5;
+static const float gdv_shadowMask  = 0.0;
+static const float gdv_masksize    = 1.0;
+static const float gdv_mcut        = 0.2;
+static const float gdv_maskDark    = 0.5;
+static const float gdv_maskLight   = 1.5;
+static const float gdv_CGWG        = 0.3;
+static const float gdv_warpX       = 0.0;
+static const float gdv_warpY       = 0.0;
+static const float gdv_vignette    = 0.0;
+
+static const vec3 gdv_lumweight = vec3(0.3, 0.6, 0.1);
+
+// GLSL mod(): x - y * floor(x / y)
+float gdv_mod(float x, float y) { return x - y * floor(x / y); }
+
+float gdv_sw(float y, float l, float v)
+{
+    float scan = mix(gdv_scanline - 2.0, gdv_scanline, y);
+    float tmp = mix(gdv_beam_min + v, gdv_beam_max + v, l);
+    float ex = y * tmp;
+    return exp2(-scan * ex * ex);
+}
+
+// Shadow mask (1-4 from PD CRT Lottes shader).
+vec3 gdv_Mask(vec2 pos, vec3 c)
+{
+    pos = floor(pos / gdv_masksize);
+    vec3 mask = vec3(gdv_maskDark, gdv_maskDark, gdv_maskDark);
+
+    // No mask
+    if (gdv_shadowMask == -1.0)
+    {
+        mask = vec3(1.0);
+    }
+
+    // Phosphor.
+    else if (gdv_shadowMask == 0.0)
+    {
+        pos.x = fract(pos.x * 0.5);
+        float mc = 1.0 - gdv_CGWG;
+        if (pos.x < 0.5) { mask.r = 1.1; mask.g = mc; mask.b = 1.1; }
+        else { mask.r = mc; mask.g = 1.1; mask.b = mc; }
+    }
+
+    // Very compressed TV style shadow mask.
+    else if (gdv_shadowMask == 1.0)
+    {
+        float line = gdv_maskLight;
+        float odd  = 0.0;
+
+        if (fract(pos.x / 6.0) < 0.5)
+            odd = 1.0;
+        if (fract((pos.y + odd) / 2.0) < 0.5)
+            line = gdv_maskDark;
+
+        pos.x = fract(pos.x / 3.0);
+
+        if      (pos.x < 0.333) mask.b = gdv_maskLight;
+        else if (pos.x < 0.666) mask.g = gdv_maskLight;
+        else                    mask.r = gdv_maskLight;
+
+        mask *= line;
+    }
+
+    // Aperture-grille.
+    else if (gdv_shadowMask == 2.0)
+    {
+        pos.x = fract(pos.x / 3.0);
+
+        if      (pos.x < 0.333) mask.b = gdv_maskLight;
+        else if (pos.x < 0.666) mask.g = gdv_maskLight;
+        else                    mask.r = gdv_maskLight;
+    }
+
+    // Stretched VGA style shadow mask (same as prior shaders).
+    else if (gdv_shadowMask == 3.0)
+    {
+        pos.x += pos.y * 3.0;
+        pos.x  = fract(pos.x / 6.0);
+
+        if      (pos.x < 0.333) mask.b = gdv_maskLight;
+        else if (pos.x < 0.666) mask.g = gdv_maskLight;
+        else                    mask.r = gdv_maskLight;
+    }
+
+    // VGA style shadow mask.
+    else if (gdv_shadowMask == 4.0)
+    {
+        pos.xy = floor(pos.xy * vec2(1.0, 0.5));
+        pos.x += pos.y * 3.0;
+        pos.x  = fract(pos.x / 6.0);
+
+        if      (pos.x < 0.333) mask.b = gdv_maskLight;
+        else if (pos.x < 0.666) mask.g = gdv_maskLight;
+        else                    mask.r = gdv_maskLight;
+    }
+
+    // Alternate mask 5
+    else if (gdv_shadowMask == 5.0)
+    {
+        float mx = max(max(c.r, c.g), c.b);
+        vec3 maskTmp = vec3(min(1.25 * max(mx - gdv_mcut, 0.0) / (1.0 - gdv_mcut), gdv_maskDark + 0.2 * (1.0 - gdv_maskDark) * mx));
+        float adj = 0.80 * gdv_maskLight - 0.5 * (0.80 * gdv_maskLight - 1.0) * mx + 0.75 * (1.0 - mx);
+        mask = maskTmp;
+        pos.x = fract(pos.x / 2.0);
+        if (pos.x < 0.5)
+        {
+            mask.r = adj;
+            mask.b = adj;
+        }
+        else mask.g = adj;
+    }
+
+    // Alternate mask 6
+    else if (gdv_shadowMask == 6.0)
+    {
+        float mx = max(max(c.r, c.g), c.b);
+        vec3 maskTmp = vec3(min(1.33 * max(mx - gdv_mcut, 0.0) / (1.0 - gdv_mcut), gdv_maskDark + 0.225 * (1.0 - gdv_maskDark) * mx));
+        float adj = 0.80 * gdv_maskLight - 0.5 * (0.80 * gdv_maskLight - 1.0) * mx + 0.75 * (1.0 - mx);
+        mask = maskTmp;
+        pos.x = fract(pos.x / 3.0);
+        if      (pos.x < 0.333) mask.r = adj;
+        else if (pos.x < 0.666) mask.g = adj;
+        else                    mask.b = adj;
+    }
+
+    // Alternate mask 7
+    else if (gdv_shadowMask == 7.0)
+    {
+        float mc = 1.0 - gdv_CGWG;
+        float mx = max(max(c.r, c.g), c.b);
+        float maskTmp = min(1.6 * max(mx - gdv_mcut, 0.0) / (1.0 - gdv_mcut), mc);
+        mask = vec3(maskTmp);
+        pos.x = fract(pos.x / 2.0);
+        if (pos.x < 0.5) mask = vec3(1.0 + 0.6 * (1.0 - mx));
+    }
+    else if (gdv_shadowMask == 8.0)
+    {
+        float line = gdv_maskLight;
+        float odd  = 0.0;
+
+        if (fract(pos.x / 4.0) < 0.5)
+            odd = 1.0;
+        if (fract((pos.y + odd) / 2.0) < 0.5)
+            line = gdv_maskDark;
+
+        pos.x = fract(pos.x / 2.0);
+
+        if (pos.x < 0.5) { mask.r = gdv_maskLight; mask.b = gdv_maskLight; }
+        else mask.g = gdv_maskLight;
+        mask *= line;
+    }
+
+    else if (gdv_shadowMask == 9.0)
+    {
+        vec3 Mask = vec3(gdv_maskDark);
+
+        float bright = gdv_maskLight;
+        float left  = 0.0;
+
+        if (fract(pos.x / 6.0) < 0.5)
+            left = 1.0;
+
+        float m = fract(pos.x / 3.0);
+
+        if      (m < 0.3333) Mask.b = 0.9;
+        else if (m < 0.6666) Mask.g = 0.9;
+        else                 Mask.r = 0.9;
+
+        if ((gdv_mod(pos.y, 2.0) == 1.0 && left == 1.0) || (gdv_mod(pos.y, 2.0) == 0.0 && left == 0.0)) Mask *= bright;
+
+        return Mask;
+    }
+
+    else if (gdv_shadowMask == 10.0)
+    {
+        vec3 Mask = vec3(gdv_maskDark);
+        float line = gdv_maskLight;
+        float odd  = 0.0;
+
+        if (fract(pos.x / 6.0) < 0.5)
+            odd = 1.0;
+        if (fract((pos.y + odd) / 2.0) < 0.5)
+            line = 1.0;
+
+        float m = fract(pos.x / 3.0);
+        float y = fract(pos.y / 2.0);
+
+        if      (m > 0.3333) { Mask.r = 1.0; Mask.b = 1.0; }
+        else if (m > 0.6666) Mask.g = 1.0;
+        else                 Mask = vec3(gdv_mcut);
+        if (m > 0.333) Mask *= line;
+        return Mask;
+    }
+    return mask;
+}
+
+// (The original's vign() helper is never called; omitted.)
+
+// Distortion of scanlines, and end of screen alpha.
+vec2 gdv_Warp(vec2 pos)
+{
+    pos  = pos * 2.0 - 1.0;
+    pos *= vec2(1.0 + (pos.y * pos.y) * gdv_warpX, 1.0 + (pos.x * pos.x) * gdv_warpY);
+    return pos * 0.5 + 0.5;
+}
+
+vec3 crt_gdv_mini(CrtIn c)
+{
+    vec2 vTexCoord = c.uv * 1.0001; // vertex shader
+
+    vec2 pos = gdv_Warp(vTexCoord);
+
+    vec2 OGL2Pos = pos * c.SourceSize.xy;
+    vec2 fp = fract(OGL2Pos);
+    vec2 ps = c.SourceSize.zw;
+    vec2 dx = vec2(ps.x, 0.0);
+    vec2 dy = vec2(0.0, ps.y);
+
+    vec2 pC4 = floor(OGL2Pos) * ps + 0.5 * ps;
+    float f = fp.y; if (c.OriginalSize.y > 400.0) f = 1.0;
+    vec3 color;
+
+    // Reading the texels
+    vec3 ul = crt_tex_nearest(pC4).xyz;
+    vec3 ur = crt_tex_nearest(pC4 - dx).xyz;
+    vec3 dl = crt_tex_nearest(pC4 + dy).xyz;
+    vec3 dr = crt_tex_nearest(pC4 + vec2(-ps.x, ps.y)).xyz;
+
+    float lx = fp.x;        lx = pow(lx, gdv_h_sharp);
+    float rx = 1.0 - fp.x;  rx = pow(rx, gdv_h_sharp);
+
+    vec3 color1 = (ur * rx + ul * lx) / (lx + rx);
+    vec3 color2 = (dr * rx + dl * lx) / (lx + rx);
+    color1 *= color1; color2 *= color2;
+
+    // calculating scanlines
+    float lum = dot(color1, gdv_lumweight);
+    float lum2 = dot(color2, gdv_lumweight);
+
+    float v = 0.0;
+    // vignette
+    if (gdv_vignette > 0.0) {
+        v = (vTexCoord.x - 0.5);  // range -0.5 to 0.5, 0.0 being center of screen
+        v = v * v;                // curved response
+    }
+    color = color1 * gdv_sw(f, lum, v) + color2 * gdv_sw(1.0 - f, lum2, v);
+    color = color * gdv_Mask(vTexCoord * c.OutputSize.xy, color);
+
+    color = pow(color, vec3(gdv_gamma_out));
+    float s = dot(gdv_lumweight, color);
+    color *= mix(1.0, gdv_brightboost, lum);
+    color = mix(vec3(s), color, gdv_sat);
+
+    return color;
+}
